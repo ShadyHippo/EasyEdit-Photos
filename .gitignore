@@ -1,0 +1,15 @@
+# Generated test fixtures (produced by tests/make_fixtures.py)
+tests/fixtures/
+
+# Test run artefacts
+*.log
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Editor / OS cruft
+.DS_Store
+Thumbs.db
+*~
+*.swp

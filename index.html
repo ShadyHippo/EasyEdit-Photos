@@ -1,0 +1,1752 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#1b1c1f">
+<title>Easy Edit</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="favicon-16.png" sizes="16x16" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>
+  :root {
+    --bg:#1b1c1f; --panel:#232428; --line:#34353a; --fg:#e7e7ea; --muted:#9a9ba1;
+    --accent:#3b82f6; --danger:#ef4444; --safe-b: env(safe-area-inset-bottom, 0px);
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  /* our own display:flex rules would otherwise beat the UA stylesheet's [hidden] rule */
+  [hidden] { display:none !important; }
+  html,body { height:100%; }
+  body {
+    margin:0; font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    background:var(--bg); color:var(--fg); display:flex; flex-direction:column; height:100vh;
+    overflow:hidden; overscroll-behavior:none;
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
+  }
+  input,textarea,select { -webkit-user-select:text; user-select:text; }
+
+  header#bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:8px; background:var(--panel); border-bottom:1px solid var(--line); }
+  #brand { display:flex; align-items:center; gap:7px; font-weight:700; letter-spacing:.01em; white-space:nowrap; padding:0 10px 0 2px; }
+  #brand img { width:22px; height:22px; display:block; border-radius:5px; }
+  .spacer { flex:1; }
+  .group { display:flex; gap:4px; flex-wrap:wrap; }
+  button {
+    font:inherit; color:var(--fg); background:#2c2d32; border:1px solid var(--line);
+    padding:6px 10px; border-radius:6px; cursor:pointer; white-space:nowrap; min-height:34px;
+  }
+  button:hover { background:#34353b; }
+  button:disabled { opacity:.4; cursor:default; }
+  button.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
+
+  main { flex:1; display:flex; min-height:0; }
+  #stage {
+    flex:1; min-width:0; position:relative; overflow:hidden; padding:16px;
+    display:flex; align-items:center; justify-content:center;
+    background:repeating-conic-gradient(#2a2b2f 0% 25%, #26272b 0% 50%) 50%/22px 22px;
+    touch-action:none;
+  }
+  #stage.dragover { outline:2px dashed var(--accent); outline-offset:-8px; }
+  #view { display:none; max-width:100%; max-height:100%; background:#000; touch-action:none; cursor:crosshair;
+          -webkit-user-drag:none; user-select:none;
+          box-shadow:0 0 0 1px #0007, 0 10px 34px #0009; }
+  #hint { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+          text-align:center; color:var(--muted); font-size:15px; pointer-events:none; padding:24px; }
+  #hint b { color:var(--fg); }
+
+  .textinput {
+    position:absolute; z-index:6; min-width:60px; padding:2px 4px; background:rgba(0,0,0,.35);
+    border:1px dashed var(--accent); border-radius:3px; outline:none; resize:none; overflow:hidden;
+    white-space:pre; color:#fff; line-height:1.15;
+  }
+  #selbar {
+    position:absolute; z-index:7; display:flex; gap:4px; background:#111d; border:1px solid var(--line);
+    border-radius:8px; padding:4px; backdrop-filter:blur(4px);
+  }
+  #selbar button { min-height:30px; padding:4px 9px; }
+
+  aside#panel { width:244px; flex:none; background:var(--panel); border-left:1px solid var(--line);
+                overflow:auto; padding:10px; display:flex; flex-direction:column; gap:15px; }
+  aside#panel section { display:flex; flex-direction:column; gap:7px; }
+  aside#panel h3 { margin:0; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+  aside#panel label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  aside#panel input[type=range] { flex:1; min-width:0; accent-color:var(--accent); height:24px; }
+  aside#panel input[type=color] { width:38px; height:26px; padding:0; border:1px solid var(--line); border-radius:4px; background:none; }
+  aside#panel input[type=number], aside#panel input[type=text], aside#panel select {
+    font:inherit; color:var(--fg); background:#2c2d32; border:1px solid var(--line);
+    border-radius:6px; padding:6px 7px; width:100%; min-width:0;
+  }
+  .row { display:flex; gap:6px; }
+  .row > * { flex:1; }
+  output { color:var(--muted); width:28px; text-align:right; }
+  .note { color:var(--muted); font-size:11px; line-height:1.35; }
+
+  #toast { position:fixed; left:50%; bottom:calc(22px + var(--safe-b)); transform:translateX(-50%);
+           background:#111; color:#fff; border:1px solid var(--line); padding:8px 14px; border-radius:8px;
+           opacity:0; transition:opacity .2s; pointer-events:none; z-index:60; max-width:90vw; text-align:center; }
+  #toast.show { opacity:.96; }
+
+  #sheetToggle { display:none; }
+  #backdrop { display:none; }
+
+  #layerList { display:flex; flex-direction:column; gap:3px; max-height:190px; overflow:auto; }
+  .layerRow { display:flex; align-items:center; gap:7px; padding:4px 6px; border:1px solid transparent;
+              border-radius:6px; cursor:pointer; font-size:12px; }
+  .layerRow:hover { background:#2c2d32; }
+  .layerRow.active { border-color:var(--accent); background:#2b3550; }
+  .layerRow.pinned { opacity:.65; cursor:default; }
+  .layerRow img { width:36px; height:27px; object-fit:contain; flex:none; border-radius:3px;
+                  background:repeating-conic-gradient(#2a2b2f 0% 25%, #26272b 0% 50%) 50%/8px 8px; }
+  .layerDot { width:8px; height:8px; border-radius:50%; background:var(--accent); flex:none; margin:0 14px; }
+  .layerRow .lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #layerCount { color:var(--muted); font-size:11px; }
+  #layersSec h3 { display:flex; align-items:center; justify-content:space-between; gap:6px; }
+  #layersToggle { min-height:22px; padding:1px 7px; font-size:10px; }
+  #layersBody { display:flex; flex-direction:column; gap:7px; }
+
+  #dialog { position:fixed; inset:0; background:#000a; z-index:80; display:flex;
+            align-items:center; justify-content:center; padding:18px; }
+  #dialogBox { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px;
+               width:100%; max-width:340px; display:flex; flex-direction:column; gap:12px;
+               box-shadow:0 18px 50px #000b; }
+  #dialogBox h3 { margin:0; font-size:14px; }
+  #dialogBox label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  #dialogBox input, #dialogBox select { font:inherit; color:var(--fg); background:#2c2d32;
+               border:1px solid var(--line); border-radius:6px; padding:6px 7px; width:100%; min-width:0; }
+
+  /* ---------------- mobile ---------------- */
+  @media (max-width: 820px) {
+    header#bar { padding:6px 8px; gap:6px; }
+    #brand { padding-right:2px; }
+    #brand span { display:none; }
+    #tools { width:100%; flex-wrap:nowrap; overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:2px; }
+    #actions { width:100%; flex-wrap:nowrap; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    #bar .spacer { display:none; }
+    button { min-height:40px; padding:9px 12px; }
+    #sheetToggle { display:inline-flex; }
+
+    aside#panel {
+      position:fixed; left:0; right:0; bottom:0; top:auto; width:auto; height:auto;
+      max-height:72vh; border-left:none; border-top:1px solid var(--line);
+      border-radius:16px 16px 0 0; z-index:40;
+      padding-bottom:calc(14px + var(--safe-b));
+      transform:translateY(calc(100% + 10px));
+      transition:transform .22s ease;
+      box-shadow:0 -10px 30px #0009;
+    }
+    aside#panel.open { transform:translateY(0); }
+    #backdrop { display:block; position:fixed; inset:0; background:#0008; z-index:35; opacity:0; pointer-events:none; transition:opacity .22s; }
+    #backdrop.show { opacity:1; pointer-events:auto; }
+    #stage { padding:10px; }
+  }
+</style>
+</head>
+<body>
+
+<header id="bar">
+  <span id="brand"><img src="favicon.svg" alt="" width="22" height="22"><span>Easy Edit</span></span>
+  <div class="group" id="tools"></div>
+  <div class="spacer"></div>
+  <div class="group" id="actions">
+    <button id="undoBtn" disabled>Undo</button>
+    <button id="redoBtn" disabled>Redo</button>
+    <button id="rotL">Rot L</button>
+    <button id="rotR">Rot R</button>
+    <button id="flipH">Flip H</button>
+    <button id="flipV">Flip V</button>
+  </div>
+  <button id="newBtn">New</button>
+  <button id="openBtn" class="primary">Open</button>
+  <button id="sheetToggle" class="primary">Controls</button>
+  <input type="file" id="file" accept="image/*" hidden>
+</header>
+
+<main>
+  <div id="stage">
+    <canvas id="view" draggable="false"></canvas>
+    <div id="hint">Drop an image, paste with <b>Ctrl+V</b>, or tap <b>Open</b></div>
+    <div id="selbar" hidden>
+      <button id="selEdit">Edit</button>
+      <button id="selDup">Duplicate</button>
+      <button id="selDel" class="danger">Delete</button>
+    </div>
+  </div>
+
+  <aside id="panel">
+    <section id="layersSec">
+      <h3>Layers <button id="layersToggle" title="Hide / show">Hide</button></h3>
+      <div id="layersBody">
+        <div id="layerList"></div>
+        <div id="layerCount">No layers yet</div>
+        <div class="row">
+          <button id="layFront">Front</button>
+          <button id="layUp">Up</button>
+          <button id="layDown">Down</button>
+          <button id="layBack">Back</button>
+        </div>
+        <div class="row">
+          <button id="layRotL">Rot L</button>
+          <button id="layRotR">Rot R</button>
+          <button id="layDel" class="danger">Delete</button>
+        </div>
+        <button id="layFlatten">Flatten ticked into background</button>
+        <div class="note">Ticked rows are drawn into the background in their current order (undo reverts it). Ctrl/Shift-click rows to select several, then drag them together in the canvas.</div>
+      </div>
+    </section>
+
+    <section id="styleSec">
+      <h3>Style</h3>
+      <label>Color <input type="color" id="color" value="#ff3b30"></label>
+      <label>Width <input type="range" id="width" min="1" max="80" value="6"><output id="widthOut">6</output></label>
+      <label>Opacity <input type="range" id="opacity" min="0.05" max="1" step="0.05" value="1"><output id="opacityOut">1</output></label>
+      <label>Fill <input type="checkbox" id="filled"></label>
+      <label id="fontRow">Font <input type="range" id="fontSize" min="8" max="220" value="48"><output id="fontSizeOut">48</output></label>
+    </section>
+
+    <section id="wandSec" hidden>
+      <h3>Magic wand</h3>
+      <label>Tolerance <input type="range" id="tolerance" min="0" max="100" value="22"><output id="toleranceOut">22</output></label>
+      <label>All similar <input type="checkbox" id="wandGlobal"></label>
+      <div class="note">Tap the area to erase. Raise tolerance to remove more shades at once.</div>
+    </section>
+
+    <section id="cropSec" hidden>
+      <h3>Crop</h3>
+      <div class="row">
+        <button id="applyCropBtn" class="primary">Apply</button>
+        <button id="cancelCropBtn">Cancel</button>
+      </div>
+      <div class="note">Drag the handles to resize, drag inside to move.</div>
+    </section>
+
+    <section id="selSec">
+      <h3>Selection</h3>
+      <div class="row">
+        <button id="selAllBtn">Select all</button>
+        <button id="selClearBtn">Clear</button>
+      </div>
+      <div class="note" id="selInfo">Whole image</div>
+    </section>
+
+    <section id="fxSec">
+      <h3>Effects</h3>
+      <label>Pixelate <input type="range" id="fxPixel" min="3" max="60" value="14"><output id="fxPixelOut">14</output></label>
+      <button id="fxPixelBtn">Pixelate</button>
+      <label>Blur <input type="range" id="fxBlur" min="1" max="30" value="8"><output id="fxBlurOut">8</output></label>
+      <button id="fxBlurBtn">Blur</button>
+      <div class="note">Works on what you see: the selection is flattened and the effect applied to it, then kept as its own layer. No selection = the whole picture. Ctrl+A selects all.</div>
+    </section>
+
+    <section id="adjSec">
+      <h3>Adjust background</h3>
+      <label>Bright <input type="range" id="brightness" min="0" max="200" value="100"></label>
+      <label>Contrast <input type="range" id="contrast" min="0" max="200" value="100"></label>
+      <label>Sat <input type="range" id="saturate" min="0" max="200" value="100"></label>
+      <label>Gray <input type="range" id="grayscale" min="0" max="100" value="0"></label>
+      <label>Sepia <input type="range" id="sepia" min="0" max="100" value="0"></label>
+      <div class="row">
+        <button id="applyAdj">Apply</button>
+        <button id="resetAdj">Reset</button>
+      </div>
+    </section>
+
+    <section id="funSec">
+      <h3>Fun</h3>
+      <label>Fry <select id="fryLevel">
+        <option value="light">Light</option>
+        <option value="medium">Medium</option>
+        <option value="deep" selected>Deep fried</option>
+        <option value="nuked">Nuked</option>
+      </select></label>
+      <button id="fryBtn">Deep fry</button>
+    </section>
+
+    <section id="bgSec">
+      <h3>Remove background</h3>
+      <input type="text" id="bgUrl" placeholder="http://nas:7000/api/remove" spellcheck="false">
+      <button id="bgBtn">Remove BG (server)</button>
+      <div class="note">Applies to the selected layer, or the background. Uses your rembg container; the Wand does it instantly on-device.</div>
+    </section>
+
+    <section id="sizeSec">
+      <h3>Resize</h3>
+      <div class="row">
+        <input type="number" id="rw" placeholder="width" min="1">
+        <input type="number" id="rh" placeholder="height" min="1">
+      </div>
+      <button id="applyResize">Resize</button>
+    </section>
+
+    <section id="outSec">
+      <h3>Export</h3>
+      <label>Format
+        <select id="fmt">
+          <option value="image/png">PNG</option>
+          <option value="image/jpeg">JPEG</option>
+          <option value="image/webp">WebP</option>
+        </select>
+      </label>
+      <label id="qRow">Quality <input type="range" id="quality" min="0.1" max="1" step="0.05" value="0.92"></label>
+      <label>Name <input type="text" id="fname" value="image"></label>
+      <div class="row">
+        <button id="copyBtn" class="primary">Copy</button>
+        <button id="dlBtn" class="primary">Download</button>
+      </div>
+    </section>
+  </aside>
+</main>
+
+<div id="dialog" hidden>
+  <div id="dialogBox">
+    <h3>New canvas</h3>
+    <div class="row">
+      <label>Width <input type="number" id="newW" value="1200" min="1"></label>
+      <label>Height <input type="number" id="newH" value="1200" min="1"></label>
+    </div>
+    <label>Background
+      <select id="newBg">
+        <option value="#ffffff">White</option>
+        <option value="#000000">Black</option>
+        <option value="transparent">Transparent</option>
+      </select>
+    </label>
+    <div class="row">
+      <button id="newCreate" class="primary">Create canvas</button>
+      <button id="newClearBtn" class="danger">Clear all</button>
+    </div>
+    <button id="newCancel">Cancel</button>
+  </div>
+</div>
+
+<div id="backdrop"></div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const view = $('#view'), vctx = view.getContext('2d'), stage = $('#stage');
+
+const MAX_UNDO = 12;
+const HANDLE_PX = 26;            // crop handle hit size, in screen px (finger friendly)
+const DEFAULT_FILTER = { brightness:100, contrast:100, saturate:100, grayscale:0, sepia:0 };
+const FONTS = 'Impact, "Arial Black", "Helvetica Neue", sans-serif';
+
+let base = document.createElement('canvas');        // the background (bottom of the stack)
+let bctx = base.getContext('2d');
+let overlay = document.createElement('canvas');      // annotations; always above every layer
+let octx = overlay.getContext('2d');
+let layers = [];                                      // pasted images; index 0 = back, last = front
+let selLayer = null;                                  // primary (last-clicked) layer id
+let selLayers = [];                                   // full multi-selection
+let checkedLayers = new Set();                        // ticked rows, for Flatten
+let flattenAnnotations = false;
+let clip = null;                                      // internal copy/paste buffer
+let clipSig = null;                                   // pixel fingerprint of the copy we mirrored to the OS clipboard
+let original = null, hasImage = false;
+
+let texts = [];                  // live, movable text boxes
+let selText = null;              // selected text id
+let undoStack = [], redoStack = [];
+let gestureSnap = null;
+
+let tool = 'move';
+let drag = null;                 // {kind:'shape'|'text'|'marquee', ...}
+let crop = null;                 // {x,y,w,h} in canvas coords
+let cropDrag = null;
+let selection = null;            // {x,y,w,h}; effects target this, else the whole image
+
+let adjust = { ...DEFAULT_FILTER };
+const style = { color:'#ff3b30', width:6, opacity:1, filled:false, fontSize:48, fontFamily:FONTS };
+const wand = { tolerance:22, global:false };
+const fx = { block:14, soft:8 };   // pixelate block size, blur radius
+
+const uid = () => Math.random().toString(36).slice(2, 9);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const canvas = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+const clone = src => { const c = canvas(src.width, src.height); c.getContext('2d').drawImage(src, 0, 0); return c; };
+
+/* ============================ tools ============================ */
+const TOOLS = [
+  ['move','Move'], ['marquee','Select'], ['text','Text'], ['brush','Pen'], ['highlight','Highlight'],
+  ['line','Line'], ['arrow','Arrow'], ['rect','Rect'], ['ellipse','Ellipse'],
+  ['wand','Wand'], ['crop','Crop'],
+];
+const toolsEl = $('#tools');
+for (const [id, label] of TOOLS) {
+  const b = document.createElement('button');
+  b.textContent = label; b.dataset.tool = id; b.title = label;
+  b.addEventListener('click', () => setTool(id));
+  toolsEl.appendChild(b);
+}
+function setTool(id) {
+  if (tool === 'crop' && id !== 'crop') cancelCrop();
+  tool = id;
+  [...toolsEl.children].forEach(b => b.classList.toggle('active', b.dataset.tool === id));
+  view.style.cursor = id === 'text' ? 'text' : ((id === 'move' || id === 'marquee') ? 'default' : 'crosshair');
+  $('#fontRow').style.display = (id === 'text' || id === 'move') ? '' : 'none';
+  $('#wandSec').hidden = id !== 'wand';
+  $('#cropSec').hidden = !crop;
+  if (id === 'highlight' && $('#opacity').value === '1') setRange('opacity', 0.4);
+  if (id !== 'move' && id !== 'text') { selText = null; updateSelBar(); }
+  render();
+}
+
+/* ============================ rendering ============================ */
+function filterCSS() {
+  const a = adjust, p = [];
+  if (a.brightness !== 100) p.push(`brightness(${a.brightness}%)`);
+  if (a.contrast   !== 100) p.push(`contrast(${a.contrast}%)`);
+  if (a.saturate   !== 100) p.push(`saturate(${a.saturate}%)`);
+  if (a.grayscale)          p.push(`grayscale(${a.grayscale}%)`);
+  if (a.sepia)              p.push(`sepia(${a.sepia}%)`);
+  return p.length ? p.join(' ') : 'none';
+}
+const textLines = t => String(t.text).split('\n');
+function textBBox(t) {
+  vctx.save(); vctx.font = `${t.size}px ${t.font}`;
+  let w = 10;
+  for (const l of textLines(t)) w = Math.max(w, vctx.measureText(l).width);
+  vctx.restore();
+  return { w, h: Math.max(1, textLines(t).length) * t.size * 1.15 };
+}
+function paintText(ctx, t) {
+  ctx.save();
+  ctx.globalAlpha = t.opacity;
+  ctx.fillStyle = t.color;
+  ctx.font = `${t.size}px ${t.font}`;
+  ctx.textBaseline = 'top';
+  textLines(t).forEach((l, i) => ctx.fillText(l, t.x, t.y + i * t.size * 1.15));
+  ctx.restore();
+}
+function drawSelection(t) {
+  const b = textBBox(t);
+  const s = viewScale();
+  vctx.save();
+  vctx.strokeStyle = '#3b82f6';
+  vctx.lineWidth = 2 / s;
+  vctx.setLineDash([6 / s, 4 / s]);
+  vctx.strokeRect(t.x - 4 / s, t.y - 4 / s, b.w + 8 / s, b.h + 8 / s);
+  vctx.restore();
+}
+const viewScale = () => {
+  const r = view.getBoundingClientRect();
+  return view.width ? r.width / view.width : 1;
+};
+
+function render() {
+  if (!hasImage) return;
+  vctx.setTransform(1, 0, 0, 1, 0, 0);
+  vctx.filter = 'none';
+  vctx.clearRect(0, 0, view.width, view.height);
+  vctx.save();
+  vctx.filter = filterCSS();
+  vctx.drawImage(base, 0, 0);
+  vctx.restore();
+  vctx.filter = 'none';
+  for (const l of layers) vctx.drawImage(l.c, l.x, l.y, l.w, l.h);
+  vctx.drawImage(overlay, 0, 0);
+  for (const t of texts) paintText(vctx, t);
+  const sel = texts.find(t => t.id === selText);
+  if (sel) drawSelection(sel);
+  for (const l of selectedLayerSet()) drawLayerOutline(l, l.id === selLayer);
+  if (drag && drag.shape) paintShape(vctx, drag.shape);
+  if (crop) drawCropOverlay();
+  else if (drag && drag.kind === 'marquee') drawSelectionOverlay(marqueeRect(drag));
+  else if (selection) drawSelectionOverlay(selection);
+  updateSelBar();
+}
+
+function paintShape(ctx, s) {
+  ctx.save();
+  ctx.globalAlpha = s.opacity;
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ctx.strokeStyle = s.color; ctx.fillStyle = s.color; ctx.lineWidth = s.width;
+  if (s.type === 'brush' || s.type === 'highlight') {
+    if (s.type === 'highlight') { ctx.globalAlpha = s.opacity * 0.4; ctx.lineWidth = s.width * 2.5; }
+    ctx.beginPath();
+    s.points.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+    ctx.stroke();
+  } else if (s.type === 'line' || s.type === 'arrow') {
+    ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); ctx.stroke();
+    if (s.type === 'arrow') {
+      const a = Math.atan2(s.y2 - s.y1, s.x2 - s.x1), h = Math.max(12, s.width * 3.2);
+      ctx.beginPath();
+      ctx.moveTo(s.x2, s.y2); ctx.lineTo(s.x2 - h * Math.cos(a - 0.4), s.y2 - h * Math.sin(a - 0.4));
+      ctx.moveTo(s.x2, s.y2); ctx.lineTo(s.x2 - h * Math.cos(a + 0.4), s.y2 - h * Math.sin(a + 0.4));
+      ctx.stroke();
+    }
+  } else if (s.type === 'rect') {
+    const w = s.x2 - s.x1, h = s.y2 - s.y1;
+    if (s.filled) ctx.fillRect(s.x1, s.y1, w, h); else ctx.strokeRect(s.x1, s.y1, w, h);
+  } else if (s.type === 'ellipse') {
+    ctx.beginPath();
+    ctx.ellipse((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2, Math.abs(s.x2 - s.x1) / 2, Math.abs(s.y2 - s.y1) / 2, 0, 0, Math.PI * 2);
+    if (s.filled) ctx.fill(); else ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ============================ history ============================ */
+function syncOverlaySize() {
+  if (overlay.width !== base.width || overlay.height !== base.height) {
+    const t = canvas(base.width, base.height);
+    t.getContext('2d').drawImage(overlay, 0, 0);
+    overlay = t; octx = overlay.getContext('2d');
+  }
+}
+function snapshot() {
+  return { base: clone(base), overlay: clone(overlay),
+           layers: layers.map(l => ({ ...l, c: clone(l.c) })),
+           texts: texts.map(t => ({ ...t })), sel: selText, selLayer, selLayers: [...selLayers] };
+}
+function restore(s) {
+  base = s.base; bctx = base.getContext('2d');
+  overlay = s.overlay; octx = overlay.getContext('2d');
+  layers = s.layers.map(l => ({ ...l, c: clone(l.c) }));
+  texts = s.texts.map(t => ({ ...t }));
+  selText = s.sel; selLayer = s.selLayer; selLayers = s.selLayers ? [...s.selLayers] : [];
+  resizeView(); render(); updateHistoryUI(); updateSelInfo(); updateLayerUI();
+}
+function commitPre(pre) {
+  undoStack.push(pre);
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack.length = 0; updateHistoryUI();
+}
+function pushUndo() {
+  undoStack.push(snapshot());
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack.length = 0; updateHistoryUI();
+}
+function beginGesture() { gestureSnap = snapshot(); }
+function commitGesture(changed) {
+  if (changed && gestureSnap) {
+    undoStack.push(gestureSnap);
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    redoStack.length = 0; updateHistoryUI();
+  }
+  gestureSnap = null;
+}
+function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); }
+function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); }
+function updateHistoryUI() { $('#undoBtn').disabled = !undoStack.length; $('#redoBtn').disabled = !redoStack.length; }
+
+/* ============================ canvas + layers ============================ */
+function resizeView() {
+  view.width = base.width; view.height = base.height;
+  view.style.display = 'block';
+  $('#hint').style.display = 'none';
+  $('#rw').value = base.width; $('#rh').value = base.height;
+  syncOverlaySize();
+}
+function setBase(c) {
+  base = c; bctx = base.getContext('2d');
+  selection = null; updateSelInfo();     // geometry changed, so any marquee is stale
+  resizeView(); render();
+}
+function resetStack(c) {
+  hasImage = true;
+  undoStack = []; redoStack = []; gestureSnap = null;
+  texts = []; selText = null; crop = null; cropDrag = null; selection = null;
+  layers = []; selLayer = null; selLayers = [];
+  checkedLayers = new Set(); flattenAnnotations = false; clip = null; clipSig = null;
+  adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
+  base = c; bctx = c.getContext('2d');
+  overlay = canvas(c.width, c.height); octx = overlay.getContext('2d');
+  original = clone(c);
+  resizeView(); render();
+  updateHistoryUI(); updateSelInfo(); updateLayerUI(); setTool('move');
+}
+function makeThumb(src) {
+  const t = canvas(36, 27), x = t.getContext('2d');
+  const k = Math.min(36 / src.width, 27 / src.height);
+  const w = Math.max(1, src.width * k), h = Math.max(1, src.height * k);
+  x.drawImage(src, (36 - w) / 2, (27 - h) / 2, w, h);
+  return t.toDataURL();
+}
+function addLayer(src) {
+  const pre = snapshot();
+  let w = src.width, h = src.height;
+  if (w > base.width || h > base.height) {
+    const k = Math.min(base.width / w, base.height / h);
+    w = Math.round(w * k); h = Math.round(h * k);
+  }
+  const c = canvas(src.width, src.height);
+  c.getContext('2d').drawImage(src, 0, 0);
+  const l = { id: uid(), c, x: Math.round((base.width - w) / 2), y: Math.round((base.height - h) / 2), w, h };
+  layers.push(l);
+  commitPre(pre);
+  setSelection([l.id]);
+  render();
+  toast('Added layer ' + layers.length);
+}
+function loadSource(src, w, h) {
+  const c = canvas(w, h); c.getContext('2d').drawImage(src, 0, 0);
+  resetStack(c);
+  toast('Canvas ' + w + ' x ' + h);
+}
+async function blobToSource(blob) {
+  try { return await createImageBitmap(blob); }
+  catch {
+    return await new Promise((res, rej) => {
+      const url = URL.createObjectURL(blob), img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); res(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('decode')); };
+      img.src = url;
+    });
+  }
+}
+async function loadBlob(blob) {
+  try {
+    const src = await blobToSource(blob);
+    if (!hasImage) loadSource(src, src.width, src.height);
+    else addLayer(src);
+    if (src.close) src.close();
+  } catch { toast('Could not decode that image'); }
+}
+
+/* ============================ pointer ============================ */
+function toCanvas(e) {
+  const r = view.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * (view.width / r.width), y: (e.clientY - r.top) * (view.height / r.height) };
+}
+function hitText(p) {
+  for (let i = texts.length - 1; i >= 0; i--) {
+    const t = texts[i], b = textBBox(t);
+    if (p.x >= t.x - 6 && p.x <= t.x + b.w + 6 && p.y >= t.y - 6 && p.y <= t.y + b.h + 6) return t;
+  }
+  return null;
+}
+
+function hitLayer(p) {
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const l = layers[i];
+    if (p.x >= l.x && p.x <= l.x + l.w && p.y >= l.y && p.y <= l.y + l.h) return l;
+  }
+  return null;
+}
+function layerHandlePoints(l) {
+  return {
+    nw:[l.x, l.y],            n:[l.x + l.w / 2, l.y],  ne:[l.x + l.w, l.y],
+    w:[l.x, l.y + l.h / 2],                              e:[l.x + l.w, l.y + l.h / 2],
+    sw:[l.x, l.y + l.h],      s:[l.x + l.w / 2, l.y + l.h], se:[l.x + l.w, l.y + l.h],
+    c:[l.x + l.w / 2, l.y + l.h / 2],
+  };
+}
+// Resize handles live on the primary layer; the centre grab block is on every selected layer,
+// so any of them can be dragged to move the whole selection.
+function handleHit(e) {
+  const r = view.getBoundingClientRect(), s = viewScale(), R = HANDLE_PX / 2;
+  const near = pts => {
+    for (const k in pts) {
+      const [hx, hy] = pts[k];
+      if (Math.abs(e.clientX - (r.left + hx * s)) <= R && Math.abs(e.clientY - (r.top + hy * s)) <= R) return k;
+    }
+    return null;
+  };
+  const prim = layers.find(l => l.id === selLayer);
+  if (prim) {
+    const q = layerHandlePoints(prim);
+    const edges = { nw:q.nw, n:q.n, ne:q.ne, w:q.w, e:q.e, sw:q.sw, s:q.s, se:q.se };
+    const k = near(edges);
+    if (k) return { kind:'resize', handle:k };
+  }
+  for (const l of selectedLayerSet()) {
+    const q = layerHandlePoints(l);
+    if (near({ c:q.c })) return { kind:'move', id:l.id };
+  }
+  return null;
+}
+function drawLayerOutline(l, isPrimary) {
+  const s = viewScale(), t = 16 / s;
+  vctx.save();
+  vctx.fillStyle = isPrimary ? 'rgba(34,197,94,.12)' : 'rgba(34,197,94,.06)';
+  vctx.fillRect(l.x, l.y, l.w, l.h);
+  vctx.strokeStyle = '#22c55e';
+  vctx.lineWidth = (isPrimary ? 2.5 : 1.5) / s;
+  vctx.setLineDash(isPrimary ? [] : [9 / s, 6 / s]);
+  vctx.strokeRect(l.x, l.y, l.w, l.h);
+  vctx.setLineDash([]);
+  if (isPrimary) {
+    const pts = layerHandlePoints(l);
+    vctx.fillStyle = '#22c55e';
+    for (const k in pts) {
+      if (k === 'c') continue;
+      const [hx, hy] = pts[k];
+      vctx.fillRect(hx - t / 2, hy - t / 2, t, t);
+    }
+  }
+  // centre grab block: white with a green ring, so it reads as "drag me", not "resize me"
+  const [cx, cy] = layerHandlePoints(l).c, cs = t * 1.2;
+  vctx.fillStyle = '#ffffff';
+  vctx.fillRect(cx - cs / 2, cy - cs / 2, cs, cs);
+  vctx.strokeStyle = '#22c55e'; vctx.lineWidth = 2.5 / s;
+  vctx.strokeRect(cx - cs / 2, cy - cs / 2, cs, cs);
+  vctx.restore();
+}
+function selectedLayerSet() {
+  const ids = selLayers.length ? selLayers : (selLayer ? [selLayer] : []);
+  return ids.map(id => layers.find(l => l.id === id)).filter(Boolean);
+}
+function layerResizeTo(l, d, p) {
+  const ow = d.ow, oh = d.oh, right = d.ox + ow, bottom = d.oy + oh;
+  const MIN = 6;
+  // side handles stretch on one axis only, breaking the aspect ratio on purpose
+  if (d.handle === 'e' || d.handle === 'w') {
+    const w = Math.max(MIN, d.handle === 'e' ? (p.x - d.ox) : (right - p.x));
+    l.x = d.handle === 'e' ? d.ox : right - w;
+    l.y = d.oy; l.w = w; l.h = oh;
+    return;
+  }
+  if (d.handle === 'n' || d.handle === 's') {
+    const h = Math.max(MIN, d.handle === 's' ? (p.y - d.oy) : (bottom - p.y));
+    l.y = d.handle === 's' ? d.oy : bottom - h;
+    l.x = d.ox; l.w = ow; l.h = h;
+    return;
+  }
+  // corners stay uniform
+  let k;
+  if (d.handle === 'se')      k = Math.max((p.x - d.ox) / ow, (p.y - d.oy) / oh);
+  else if (d.handle === 'nw') k = Math.max((right - p.x) / ow, (bottom - p.y) / oh);
+  else if (d.handle === 'ne') k = Math.max((p.x - d.ox) / ow, (bottom - p.y) / oh);
+  else                        k = Math.max((right - p.x) / ow, (p.y - d.oy) / oh);
+  k = clamp(k, 0.02, 30);
+  const nw = ow * k, nh = oh * k;
+  if (d.handle === 'se')      { l.x = d.ox; l.y = d.oy; }
+  else if (d.handle === 'nw') { l.x = right - nw; l.y = bottom - nh; }
+  else if (d.handle === 'ne') { l.x = d.ox; l.y = bottom - nh; }
+  else                        { l.x = right - nw; l.y = d.oy; }
+  l.w = nw; l.h = nh;
+}
+view.addEventListener('pointerdown', e => {
+  if (!hasImage) return;
+  e.preventDefault();                    // stop the browser's own drag/selection starting on mousedown
+  const p = toCanvas(e);
+  const capture = () => { try { view.setPointerCapture(e.pointerId); } catch {} };
+
+  if (tool === 'crop') { cropDown(e, p); capture(); return; }
+  if (tool === 'wand') { doWand(p); return; }
+  if (tool === 'marquee') {
+    beginGesture();
+    drag = { kind:'marquee', startX:p.x, startY:p.y, x2:p.x, y2:p.y };
+    capture(); render(); return;
+  }
+  if (tool === 'text') {
+    const hit = hitText(p);
+    if (hit) { selectText(hit); startTextDrag(hit, p, e); return; }
+    createTextBox(p); return;
+  }
+  if (tool === 'move') {
+    const hh = handleHit(e);
+    if (hh) {
+      if (hh.kind === 'move') {
+        if (selLayers.includes(hh.id)) { selLayer = hh.id; updateLayerUI(); }
+        else setSelection([hh.id]);
+        beginGesture();
+        drag = { kind:'layer', ox:p.x, oy:p.y,
+                 orig: movingIds().map(id => { const q = layers.find(z => z.id === id); return { id, x:q.x, y:q.y }; }) };
+        capture(); render(); return;
+      }
+      const l = layers.find(x => x.id === selLayer);
+      beginGesture();
+      drag = { kind:'layerResize', id:l.id, handle:hh.handle, ox:l.x, oy:l.y, ow:l.w, oh:l.h };
+      capture(); render(); return;
+    }
+    const hit = hitText(p);
+    if (hit) {
+      selText = hit.id; selLayer = null; beginGesture();
+      drag = { kind:'text', id:hit.id, ox:p.x - hit.x, oy:p.y - hit.y };
+      capture(); updateLayerUI(); render(); return;
+    }
+    selText = null;
+    const lh = hitLayer(p);
+    if (lh) {
+      if (selLayers.length && !selLayers.includes(selLayer)) selLayers = selLayer ? [selLayer] : [];
+      const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+      const inSel = selLayers.includes(lh.id);
+      if (additive) setSelection(inSel ? selLayers.filter(x => x !== lh.id) : [...selLayers, lh.id]);
+      else if (!inSel) setSelection([lh.id]);                    // clicking outside the group reselects
+      else if (selLayer !== lh.id) { selLayer = lh.id; updateLayerUI(); }   // keep the group, retarget primary
+      beginGesture();
+      drag = { kind:'layer', ox:p.x, oy:p.y,
+               orig: movingIds().map(id => { const q = layers.find(z => z.id === id); return { id, x:q.x, y:q.y }; }) };
+      capture(); render(); return;
+    }
+    setSelection([]);
+    render(); return;
+  }
+  beginGesture();
+  drag = { kind:'shape', shape: { type:tool, color:style.color, width:style.width, opacity:style.opacity,
+                                  filled:style.filled, x1:p.x, y1:p.y, x2:p.x, y2:p.y, points:[p] } };
+  capture();
+  render();
+});
+function startTextDrag(t, p, e) {
+  beginGesture();
+  drag = { kind:'text', id:t.id, ox:p.x - t.x, oy:p.y - t.y };
+  try { view.setPointerCapture(e.pointerId); } catch {}
+  render();
+}
+view.addEventListener('pointermove', e => {
+  if (!hasImage) return;
+  const p = toCanvas(e);
+  if (cropDrag) { applyCropDrag(p); render(); return; }
+  if (!drag) return;
+  if (drag.kind === 'text') {
+    const t = texts.find(x => x.id === drag.id); if (!t) return;
+    t.x = clamp(p.x - drag.ox, -50, base.width); t.y = clamp(p.y - drag.oy, -50, base.height);
+  } else if (drag.kind === 'layer') {
+    const dx = p.x - drag.ox, dy = p.y - drag.oy;
+    for (const o of drag.orig) {
+      const q = layers.find(z => z.id === o.id);
+      if (q) { q.x = o.x + dx; q.y = o.y + dy; }
+    }
+  } else if (drag.kind === 'layerResize') {
+    const l = layers.find(x => x.id === drag.id); if (!l) return;
+    layerResizeTo(l, drag, p);
+  } else if (drag.kind === 'marquee') {
+    drag.x2 = p.x; drag.y2 = p.y;
+  } else {
+    const s = drag.shape;
+    if (s.type === 'brush' || s.type === 'highlight') s.points.push(p);
+    else { s.x2 = p.x; s.y2 = p.y; }
+  }
+  render();
+});
+function endPointer() {
+  if (cropDrag) { cropDrag = null; if (crop && (crop.w < 12 || crop.h < 12)) crop = defaultCrop(); $('#cropSec').hidden = !crop; commitGesture(true); render(); return; }
+  if (!drag) return;
+  const d = drag; drag = null;
+  if (d.kind === 'text') { commitGesture(true); render(); return; }
+  if (d.kind === 'layer' || d.kind === 'layerResize') { commitGesture(true); updateLayerUI(); render(); return; }
+  if (d.kind === 'marquee') {
+    const r = marqueeRect(d);
+    selection = (r.w < 6 || r.h < 6) ? null : r;
+    updateSelInfo(); commitGesture(false); render(); return;
+  }
+  const s = d.shape;
+  const moved = (s.points && s.points.length > 1) || Math.abs(s.x2 - s.x1) > 1 || Math.abs(s.y2 - s.y1) > 1;
+  if (!moved) { commitGesture(false); render(); return; }
+  paintShape(octx, s);
+  commitGesture(true);
+  render();
+}
+view.addEventListener('pointerup', endPointer);
+view.addEventListener('pointercancel', () => { drag = null; cropDrag = null; render(); });
+
+/* ============================ text boxes ============================ */
+function selectText(t) { selText = t.id; updateSelBar(); }
+function createTextBox(p) {
+  const pre = snapshot();
+  const t = { id: uid(), x: p.x, y: p.y, text: '', color: style.color, size: style.fontSize,
+              font: style.fontFamily, opacity: Math.max(0.35, style.opacity) };
+  texts.push(t); selText = t.id;
+  openTextEditor(t, pre, true);
+}
+function editSelected() {
+  const t = texts.find(x => x.id === selText); if (!t) return;
+  openTextEditor(t, snapshot(), false);
+}
+function openTextEditor(t, pre, isNew) {
+  const r = view.getBoundingClientRect(), sr = stage.getBoundingClientRect();
+  const scale = viewScale(), before = t.text;
+  const ta = document.createElement('textarea');
+  ta.className = 'textinput';
+  ta.value = t.text;
+  ta.rows = 1;
+  ta.style.left = ((r.left - sr.left) + t.x * scale) + 'px';
+  ta.style.top = ((r.top - sr.top) + t.y * scale) + 'px';
+  ta.style.color = t.color;
+  ta.style.font = `${t.size * scale}px ${t.font}`;
+  stage.appendChild(ta);
+  const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px';
+                       ta.style.width = Math.max(60, ta.scrollWidth + 10) + 'px'; };
+  ta.addEventListener('input', grow); grow();
+  setTimeout(() => ta.focus({ preventScroll:true }), 0);
+  const commit = () => {
+    const v = ta.value;
+    if (ta.parentNode) ta.remove();
+    t.text = v;
+    const emptied = !v.trim();
+    if (emptied) { texts = texts.filter(x => x !== t); if (selText === t.id) selText = null; }
+    if (v !== before || emptied) {
+      undoStack.push(pre); if (undoStack.length > MAX_UNDO) undoStack.shift();
+      redoStack.length = 0; updateHistoryUI();
+    }
+    render();
+  };
+  ta.addEventListener('blur', commit);
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { ta.value = ''; ta.blur(); }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ta.blur(); }
+    e.stopPropagation();
+  });
+}
+function deleteSelected() {
+  if (!selText) return;
+  const t = texts.find(x => x.id === selText); if (!t) return;
+  const pre = snapshot();
+  texts = texts.filter(x => x !== t); selText = null;
+  undoStack.push(pre); if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack.length = 0; updateHistoryUI(); render();
+}
+function duplicateSelected() {
+  const t = texts.find(x => x.id === selText); if (!t) return;
+  const pre = snapshot();
+  const c = { ...t, id: uid(), x: t.x + t.size * 0.4, y: t.y + t.size * 0.4 };
+  texts.push(c); selText = c.id;
+  undoStack.push(pre); if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack.length = 0; updateHistoryUI(); render();
+}
+function updateSelBar() {
+  const bar = $('#selbar');
+  const t = texts.find(x => x.id === selText);
+  if (!t || tool === 'crop') { bar.hidden = true; return; }
+  const r = view.getBoundingClientRect(), sr = stage.getBoundingClientRect();
+  const scale = viewScale(), b = textBBox(t);
+  const left = (r.left - sr.left) + t.x * scale;
+  const top = (r.top - sr.top) + t.y * scale - 42;
+  bar.hidden = false;
+  bar.style.left = clamp(left, 4, Math.max(4, sr.width - 190)) + 'px';
+  bar.style.top = clamp(top, 4, sr.height - 40) + 'px';
+}
+$('#selEdit').onclick = editSelected;
+$('#selDup').onclick = duplicateSelected;
+$('#selDel').onclick = deleteSelected;
+
+/* ============================ selection + effects ============================ */
+function marqueeRect(d) {
+  return { x: Math.min(d.startX, d.x2), y: Math.min(d.startY, d.y2),
+           w: Math.abs(d.x2 - d.startX), h: Math.abs(d.y2 - d.startY) };
+}
+function drawSelectionOverlay(r) {
+  const s = viewScale();
+  vctx.save();
+  vctx.fillStyle = 'rgba(0,0,0,.14)';
+  vctx.beginPath(); vctx.rect(0, 0, view.width, view.height); vctx.rect(r.x, r.y, r.w, r.h);
+  vctx.fill('evenodd');
+  vctx.strokeStyle = '#3b82f6'; vctx.lineWidth = 1.5 / s; vctx.setLineDash([7 / s, 5 / s]);
+  vctx.strokeRect(r.x, r.y, r.w, r.h);
+  vctx.setLineDash([]);
+  const t = 9 / s;
+  vctx.fillStyle = '#3b82f6';
+  for (const [cx, cy] of [[r.x,r.y],[r.x+r.w,r.y],[r.x,r.y+r.h],[r.x+r.w,r.y+r.h]]) vctx.fillRect(cx - t/2, cy - t/2, t, t);
+  vctx.restore();
+}
+function updateSelInfo() {
+  const el = $('#selInfo'); if (!el) return;
+  el.textContent = selection
+    ? `${selection.w} x ${selection.h} at ${selection.x}, ${selection.y}`
+    : 'Whole image';
+}
+function selectAll() {
+  if (!hasImage) return;
+  selection = { x:0, y:0, w:base.width, h:base.height };
+  updateSelInfo(); render(); toast('Selected whole image');
+}
+function clearSelection() { selection = null; updateSelInfo(); render(); }
+
+function applyPixelate() { applyCompositeEffect('pixelate'); }
+function applyBlur() { applyCompositeEffect('blur'); }
+
+/* ============================ layers panel ============================ */
+function updateLayerUI() {
+  const list = $('#layerList'); if (!list) return;
+  list.innerHTML = '';
+  const addRow = (label, thumb, opts = {}) => {
+    const row = document.createElement('div');
+    const active = opts.id ? selLayers.includes(opts.id) : false;
+    row.className = 'layerRow' + (active ? ' active' : '') + (opts.pinned ? ' pinned' : '');
+    if (opts.tick) {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = opts.tick();
+      cb.onclick = ev => { ev.stopPropagation(); opts.onTick(cb.checked); };
+      row.appendChild(cb);
+    } else if (thumb) {
+      const im = document.createElement('img'); im.src = thumb; row.appendChild(im);
+    } else {
+      const sp = document.createElement('span'); sp.className = 'layerDot'; row.appendChild(sp);
+    }
+    const tx = document.createElement('span'); tx.className = 'lbl'; tx.textContent = label;
+    row.appendChild(tx);
+    if (opts.onclick) row.onclick = opts.onclick;
+    list.appendChild(row);
+  };
+  addRow('Annotations (top)', null, {
+    tick: () => flattenAnnotations,
+    onTick: v => { flattenAnnotations = v; },
+    onclick: e => { selText = null; render(); }
+  });
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const l = layers[i];
+    addRow('Layer ' + (i + 1), makeThumb(l.c), {
+      id: l.id,
+      tick: () => checkedLayers.has(l.id),
+      onTick: v => { if (v) checkedLayers.add(l.id); else checkedLayers.delete(l.id); },
+      onclick: e => {
+        if (e && (e.ctrlKey || e.metaKey)) {
+          setSelection(selLayers.includes(l.id) ? selLayers.filter(x => x !== l.id) : [...selLayers, l.id]);
+        } else if (e && e.shiftKey && selLayer) {
+          const order = layers.map(z => z.id).reverse();
+          const a = order.indexOf(selLayer), b = order.indexOf(l.id);
+          setSelection(order.slice(Math.min(a, b), Math.max(a, b) + 1));
+        } else {
+          setSelection([l.id]);
+        }
+        selText = null; render();
+      }
+    });
+  }
+  addRow('Background', makeThumb(base), { pinned: true });
+
+  const i = layers.findIndex(l => l.id === selLayer);
+  const has = i >= 0;
+  $('#layFront').disabled = !has || i === layers.length - 1;
+  $('#layUp').disabled    = !has || i === layers.length - 1;
+  $('#layDown').disabled  = !has || i === 0;
+  $('#layBack').disabled  = !has || i === 0;
+  $('#layRotL').disabled = !has; $('#layRotR').disabled = !has;
+  $('#layDel').disabled = movingIds().length === 0;
+  $('#layFlatten').disabled = checkedLayers.size === 0 && !flattenAnnotations;
+  $('#layerCount').textContent = layers.length
+    ? layers.length + (layers.length === 1 ? ' layer' : ' layers')
+    : 'No layers yet';
+}
+function layerMove(dir) {
+  const i = layers.findIndex(l => l.id === selLayer); if (i < 0) return;
+  const pre = snapshot();
+  const [l] = layers.splice(i, 1);
+  let j = i;
+  if (dir === 'front') j = layers.length;
+  else if (dir === 'back') j = 0;
+  else if (dir === 'up') j = Math.min(layers.length, i + 1);
+  else j = Math.max(0, i - 1);
+  layers.splice(j, 0, l);
+  commitPre(pre);
+  updateLayerUI(); render();
+}
+function layerDelete() {
+  const ids = movingIds();
+  if (!ids.length) return;
+  const pre = snapshot();
+  layers = layers.filter(l => !ids.includes(l.id));
+  selLayers = []; selLayer = null;
+  commitPre(pre);
+  updateLayerUI(); render();
+}
+function layerRotate(deg) {
+  const l = layers.find(x => x.id === selLayer); if (!l) return;
+  const pre = snapshot();
+  const ow = l.w, oh = l.h, cx = l.x + ow / 2, cy = l.y + oh / 2;
+  const t = canvas(l.c.height, l.c.width), c = t.getContext('2d');
+  c.translate(t.width / 2, t.height / 2); c.rotate(deg * Math.PI / 180);
+  c.drawImage(l.c, -l.c.width / 2, -l.c.height / 2);
+  l.c = t; l.w = oh; l.h = ow;
+  l.x = cx - l.w / 2; l.y = cy - l.h / 2;
+  commitPre(pre);
+  updateLayerUI(); render();
+}
+function toggleLayers() {
+  const body = $('#layersBody');
+  body.hidden = !body.hidden;
+  $('#layersToggle').textContent = body.hidden ? 'Show' : 'Hide';
+}
+
+/* ============================ magic wand ============================ */
+function targetLayer() { return layers.find(l => l.id === selLayer) || null; }
+function primaryLayer() { return layers.find(l => l.id === selLayer) || null; }
+function movingIds() {
+  const ids = (selLayers && selLayers.includes(selLayer)) ? selLayers : (selLayer ? [selLayer] : []);
+  return ids.filter(id => layers.some(l => l.id === id));
+}
+function setSelection(ids) {
+  const seen = [];
+  for (const id of ids) if (layers.some(l => l.id === id) && !seen.includes(id)) seen.push(id);
+  selLayers = seen;
+  selLayer = seen.length ? seen[seen.length - 1] : null;
+  if (selLayer) selText = null;
+  updateLayerUI();
+}
+function regionRect() {
+  const r = selection || { x:0, y:0, w:base.width, h:base.height };
+  const x = clamp(Math.round(r.x), 0, base.width);
+  const y = clamp(Math.round(r.y), 0, base.height);
+  return { x, y, w: clamp(Math.round(r.w), 1, base.width - x), h: clamp(Math.round(r.h), 1, base.height - y) };
+}
+// Effects work on the flattened composite inside the selection, and land as a new layer.
+function applyCompositeEffect(kind) {
+  if (!hasImage) return;
+  const r = regionRect();
+  if (r.w < 2 || r.h < 2) return;
+  pushUndo();
+  const src = composite(false);
+  const patch = canvas(r.w, r.h);
+  const pc = patch.getContext('2d');
+  pc.drawImage(src, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+  if (kind === 'pixelate') {
+    const block = Math.max(2, Math.round(fx.block));
+    const tw = Math.max(1, Math.round(r.w / block)), th = Math.max(1, Math.round(r.h / block));
+    const t = canvas(tw, th);
+    t.getContext('2d').drawImage(patch, 0, 0, r.w, r.h, 0, 0, tw, th);
+    pc.clearRect(0, 0, r.w, r.h);
+    pc.imageSmoothingEnabled = false;
+    pc.drawImage(t, 0, 0, tw, th, 0, 0, r.w, r.h);
+  } else {
+    const t = canvas(r.w, r.h), tc = t.getContext('2d');
+    tc.filter = `blur(${Math.max(0.5, fx.soft)}px)`; tc.drawImage(patch, 0, 0);
+    pc.clearRect(0, 0, r.w, r.h); pc.drawImage(t, 0, 0);
+  }
+  const l = { id: uid(), c: patch, x: r.x, y: r.y, w: r.w, h: r.h };
+  layers.push(l);
+  setSelection([l.id]);
+  render();
+  toast((kind === 'pixelate' ? 'Pixelated' : 'Blurred') + ' selection');
+}
+// Cheap fingerprint of the decoded pixels. PNG bytes get re-encoded by the browser on the
+// way through the system clipboard, but the pixels survive exactly, so this is how we tell
+// "that paste is my own copy" from "that paste is a new image from elsewhere".
+function pixelSig(src) {
+  const c = canvas(32, 32), x = c.getContext('2d');
+  x.clearRect(0, 0, 32, 32);
+  x.drawImage(src, 0, 0, 32, 32);
+  const d = x.getImageData(0, 0, 32, 32).data;
+  let h = 2166136261;
+  for (let i = 0; i < d.length; i++) { h ^= d[i]; h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+async function copySel() {
+  if (selection) {
+    const r = regionRect();
+    const comp = composite(true);
+    const c = canvas(r.w, r.h);
+    c.getContext('2d').drawImage(comp, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+    clip = { c, region:true, x:r.x, y:r.y, w:r.w, h:r.h };
+  } else {
+    const l = primaryLayer();
+    if (!l) { toast('Select a layer or make a selection first'); return; }
+    clip = { c: clone(l.c), region:false, x:l.x, y:l.y, w:l.w, h:l.h };
+  }
+  // Set this BEFORE any await: paste routing must be able to recognise our own copy
+  // immediately, even if the user hits Ctrl+V before the clipboard mirror finishes.
+  clipSig = pixelSig(clip.c);
+  try {
+    const blob = await new Promise(r => clip.c.toBlob(r, 'image/png'));
+    await navigator.clipboard.write([ new ClipboardItem({ 'image/png': blob }) ]);
+  } catch { /* insecure context: internal buffer only, routing still works by pixels */ }
+  toast(clip.region ? 'Copied selection' : 'Copied layer');
+}
+function pasteClip() {
+  if (!clip) { toast('Nothing to paste'); return; }
+  const pre = snapshot();
+  const off = clip.region ? 0 : 24;
+  const l = { id: uid(), c: clone(clip.c), x: clip.x + off, y: clip.y + off, w: clip.w, h: clip.h };
+  layers.push(l);
+  commitPre(pre);
+  setSelection([l.id]);
+  render();
+  toast(clip.region ? 'Pasted selection as a layer' : 'Duplicated layer');
+}
+function flattenChecked() {
+  const ids = new Set([...checkedLayers].filter(id => layers.some(l => l.id === id)));
+  const ann = flattenAnnotations;
+  if (!ids.size && !ann) { toast('Tick at least one row to flatten'); return; }
+  const pre = snapshot();
+  const comp = canvas(base.width, base.height), cx = comp.getContext('2d');
+  cx.filter = filterCSS(); cx.drawImage(base, 0, 0);
+  for (const l of layers) if (ids.has(l.id)) cx.drawImage(l.c, l.x, l.y, l.w, l.h);
+  if (ann) {
+    cx.drawImage(overlay, 0, 0);
+    for (const t of texts) paintText(cx, t);
+  }
+  base = comp; bctx = base.getContext('2d');
+  layers = layers.filter(l => !ids.has(l.id));
+  if (ann) {
+    overlay = canvas(base.width, base.height); octx = overlay.getContext('2d');
+    texts = []; selText = null;
+  }
+  adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
+  checkedLayers = new Set(); flattenAnnotations = false;
+  commitPre(pre);
+  setSelection(selLayers);
+  render();
+  toast('Flattened into the background');
+}
+function doWand(p) {
+  const l = targetLayer();
+  const tgt = l ? l.c : base;
+  const tctx = l ? tgt.getContext('2d') : bctx;
+  const kx = l ? tgt.width / l.w : 1, ky = l ? tgt.height / l.h : 1;
+  const x = Math.round(l ? (p.x - l.x) * kx : p.x);
+  const y = Math.round(l ? (p.y - l.y) * ky : p.y);
+  if (x < 0 || y < 0 || x >= tgt.width || y >= tgt.height) return;
+  const b = selection
+    ? (l ? { x:(selection.x - l.x) * kx, y:(selection.y - l.y) * ky, w:selection.w * kx, h:selection.h * ky }
+         : selection)
+    : null;
+  const img = tctx.getImageData(0, 0, tgt.width, tgt.height);
+  const filled = floodFill(img, tgt.width, tgt.height, x, y, wand.tolerance, wand.global, b);
+  if (!filled) { toast('Nothing matched — raise tolerance'); return; }
+  pushUndo();
+  tctx.putImageData(img, 0, 0);
+  render();
+  toast('Erased ' + filled.toLocaleString() + ' px');
+}
+function floodFill(img, w, h, sx, sy, tolerance, globalMode, b) {
+  const d = img.data;
+  const x0 = b ? Math.max(0, b.x) : 0, y0 = b ? Math.max(0, b.y) : 0;
+  const x1 = b ? Math.min(w, b.x + b.w) : w, y1 = b ? Math.min(h, b.y + b.h) : h;
+  if (sx < x0 || sx >= x1 || sy < y0 || sy >= y1) return 0;
+  const i0 = (sy * w + sx) * 4;
+  const tr = d[i0], tg = d[i0 + 1], tb = d[i0 + 2], ta = d[i0 + 3];
+  const max = (tolerance / 100) * 441.67;
+  const th2 = max * max;
+  const eq = i => {
+    if (d[i + 3] === 0 && ta === 0) return true;
+    const dr = d[i] - tr, dg = d[i + 1] - tg, db = d[i + 2] - tb;
+    return dr * dr + dg * dg + db * db <= th2;
+  };
+  if (globalMode) {
+    let n = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+      const i = (y * w + x) * 4;
+      if (d[i + 3] !== 0 && eq(i)) { d[i + 3] = 0; n++; }
+    }
+    return n;
+  }
+  const seen = new Uint8Array(w * h);
+  const stack = [sx, sy];
+  let n = 0;
+  while (stack.length) {
+    const y = stack.pop(), x = stack.pop();
+    let xl = x;
+    while (xl >= x0 && !seen[y * w + xl] && eq((y * w + xl) * 4)) xl--;
+    xl++;
+    let xr = x;
+    while (xr < x1 && !seen[y * w + xr] && eq((y * w + xr) * 4)) xr++;
+    xr--;
+    for (let xi = xl; xi <= xr; xi++) {
+      const k = y * w + xi;
+      seen[k] = 1; d[k * 4 + 3] = 0; n++;
+      if (y > y0 && !seen[k - w] && eq((k - w) * 4)) { stack.push(xi, y - 1); }
+      if (y < y1 - 1 && !seen[k + w] && eq((k + w) * 4)) { stack.push(xi, y + 1); }
+    }
+  }
+  return n;
+}
+
+/* ============================ crop ============================ */
+function defaultCrop() {
+  const w = Math.round(base.width * 0.8), h = Math.round(base.height * 0.8);
+  return { x: Math.round((base.width - w) / 2), y: Math.round((base.height - h) / 2), w, h };
+}
+function cropHandlePoints() {
+  const { x, y, w, h } = crop;
+  return {
+    nw:[x, y], n:[x + w / 2, y], ne:[x + w, y],
+    w:[x, y + h / 2], e:[x + w, y + h / 2],
+    sw:[x, y + h], s:[x + w / 2, y + h], se:[x + w, y + h],
+  };
+}
+function cropHit(e) {
+  if (!crop) return null;
+  const r = view.getBoundingClientRect(), s = viewScale();
+  const pts = cropHandlePoints();
+  const R = HANDLE_PX / 2;
+  for (const k in pts) {
+    const [hx, hy] = pts[k];
+    if (Math.abs(e.clientX - (r.left + hx * s)) <= R && Math.abs(e.clientY - (r.top + hy * s)) <= R) return k;
+  }
+  const X1 = r.left + crop.x * s, Y1 = r.top + crop.y * s;
+  const X2 = X1 + crop.w * s, Y2 = Y1 + crop.h * s;
+  if (e.clientX > X1 && e.clientX < X2 && e.clientY > Y1 && e.clientY < Y2) return 'move';
+  return null;
+}
+function cropDown(e, p) {
+  const mode = cropHit(e);
+  if (mode && crop) { beginGesture(); cropDrag = { mode, startX:p.x, startY:p.y, orig:{ ...crop } }; }
+  else {
+    beginGesture();
+    crop = { x:p.x, y:p.y, w:0, h:0 };
+    cropDrag = { mode:'new', startX:p.x, startY:p.y, orig:null };
+  }
+  view.setPointerCapture(e.pointerId);
+  render();
+}
+function applyCropDrag(p) {
+  const d = cropDrag; if (!d) return;
+  let l, t, r2, b;
+  if (d.mode === 'new') {
+    l = Math.min(d.startX, p.x); t = Math.min(d.startY, p.y);
+    r2 = Math.max(d.startX, p.x); b = Math.max(d.startY, p.y);
+  } else if (d.mode === 'move') {
+    const o = d.orig;
+    l = clamp(o.x + (p.x - d.startX), 0, base.width - o.w);
+    t = clamp(o.y + (p.y - d.startY), 0, base.height - o.h);
+    r2 = l + o.w; b = t + o.h;
+  } else {
+    const o = d.orig;
+    l = o.x; t = o.y; r2 = o.x + o.w; b = o.y + o.h;
+    const dx = p.x - d.startX, dy = p.y - d.startY;
+    if (d.mode.includes('w')) l = clamp(l + dx, 0, r2 - 8);
+    if (d.mode.includes('e')) r2 = clamp(r2 + dx, l + 8, base.width);
+    if (d.mode.includes('n')) t = clamp(t + dy, 0, b - 8);
+    if (d.mode.includes('s')) b = clamp(b + dy, t + 8, base.height);
+  }
+  l = clamp(l, 0, base.width); t = clamp(t, 0, base.height);
+  r2 = clamp(r2, 0, base.width); b = clamp(b, 0, base.height);
+  crop = { x:Math.min(l, r2), y:Math.min(t, b), w:Math.abs(r2 - l), h:Math.abs(b - t) };
+}
+function drawCropOverlay() {
+  const s = viewScale();
+  vctx.save();
+  vctx.fillStyle = 'rgba(0,0,0,.58)';
+  vctx.beginPath(); vctx.rect(0, 0, view.width, view.height); vctx.rect(crop.x, crop.y, crop.w, crop.h);
+  vctx.fill('evenodd');
+  vctx.strokeStyle = 'rgba(255,255,255,.4)'; vctx.lineWidth = 1 / s;
+  for (let i = 1; i < 3; i++) {
+    const gx = crop.x + crop.w * i / 3, gy = crop.y + crop.h * i / 3;
+    vctx.beginPath(); vctx.moveTo(gx, crop.y); vctx.lineTo(gx, crop.y + crop.h); vctx.stroke();
+    vctx.beginPath(); vctx.moveTo(crop.x, gy); vctx.lineTo(crop.x + crop.w, gy); vctx.stroke();
+  }
+  vctx.strokeStyle = '#3b82f6'; vctx.lineWidth = 2 / s;
+  vctx.strokeRect(crop.x, crop.y, crop.w, crop.h);
+  const hs = 16 / s, pts = cropHandlePoints();
+  vctx.fillStyle = '#fff'; vctx.lineWidth = 2 / s; vctx.strokeStyle = '#3b82f6';
+  for (const k in pts) {
+    const [hx, hy] = pts[k];
+    vctx.beginPath(); vctx.rect(hx - hs / 2, hy - hs / 2, hs, hs); vctx.fill(); vctx.stroke();
+  }
+  vctx.restore();
+}
+function applyCrop() {
+  if (!crop || crop.w < 8 || crop.h < 8) return cancelCrop();
+  const x = Math.round(crop.x), y = Math.round(crop.y);
+  const w = Math.round(crop.w), h = Math.round(crop.h);
+  pushUndo();
+  const nb = canvas(w, h);
+  nb.getContext('2d').drawImage(base, x, y, w, h, 0, 0, w, h);
+  const no = canvas(w, h);
+  no.getContext('2d').drawImage(overlay, x, y, w, h, 0, 0, w, h);
+  layers.forEach(l => { l.x -= x; l.y -= y; });
+  texts = texts
+    .map(tx => ({ ...tx, x: tx.x - x, y: tx.y - y }))
+    .filter(tx => tx.x > -tx.size * 2 && tx.y > -tx.size * 2 && tx.x < w && tx.y < h);
+  base = nb; bctx = base.getContext('2d');
+  overlay = no; octx = overlay.getContext('2d');
+  crop = null; $('#cropSec').hidden = true;
+  selection = null; updateSelInfo();
+  resizeView(); render(); updateLayerUI(); setTool('move');
+  toast('Cropped');
+}
+function cancelCrop() { crop = null; cropDrag = null; $('#cropSec').hidden = true; render(); }
+
+/* ============================ transforms ============================ */
+function bakeTexts() {
+  if (!texts.length) return;
+  for (const t of texts) paintText(octx, t);
+  texts = []; selText = null;
+}
+function rotCanvas(src, deg) {
+  const t = canvas(src.height, src.width), c = t.getContext('2d');
+  c.translate(t.width / 2, t.height / 2); c.rotate(deg * Math.PI / 180);
+  c.drawImage(src, -src.width / 2, -src.height / 2);
+  return t;
+}
+function resizeAll(w, h) {
+  const kx = w / base.width, ky = h / base.height;
+  pushUndo();
+  const nb = canvas(w, h); nb.getContext('2d').drawImage(base, 0, 0, w, h);
+  const no = canvas(w, h); no.getContext('2d').drawImage(overlay, 0, 0, w, h);
+  layers.forEach(l => { l.x *= kx; l.y *= ky; l.w *= kx; l.h *= ky; });
+  texts.forEach(t => { t.x *= kx; t.y *= ky; t.size *= ky; });
+  base = nb; bctx = base.getContext('2d');
+  overlay = no; octx = overlay.getContext('2d');
+  selection = null; updateSelInfo();
+  resizeView(); render(); updateLayerUI(); toast('Resized');
+}
+// With a layer selected these act on that layer; otherwise on the whole composition.
+function rotate(deg) {
+  const l = targetLayer();
+  pushUndo();
+  if (l) {
+    const ow = l.w, oh = l.h, cx = l.x + ow / 2, cy = l.y + oh / 2;
+    l.c = rotCanvas(l.c, deg); l.w = oh; l.h = ow;
+    l.x = cx - l.w / 2; l.y = cy - l.h / 2;
+    updateLayerUI(); render(); toast('Rotated layer'); return;
+  }
+  bakeTexts();
+  const W = base.width, H = base.height;
+  layers.forEach(lz => {
+    const nx = deg > 0 ? H - (lz.y + lz.h) : lz.y;
+    const ny = deg > 0 ? lz.x : W - (lz.x + lz.w);
+    const ow = lz.w, oh = lz.h;
+    lz.c = rotCanvas(lz.c, deg);
+    lz.w = oh; lz.h = ow; lz.x = nx; lz.y = ny;
+  });
+  const no = rotCanvas(overlay, deg);
+  base = rotCanvas(base, deg); bctx = base.getContext('2d');
+  overlay = no; octx = overlay.getContext('2d');
+  selection = null; updateSelInfo();
+  resizeView(); render(); updateLayerUI(); toast('Rotated canvas');
+}
+function flip(axis) {
+  const l = targetLayer();
+  pushUndo();
+  const mirror = src => {
+    const t = canvas(src.width, src.height), c = t.getContext('2d');
+    c.translate(axis === 'h' ? t.width : 0, axis === 'v' ? t.height : 0);
+    c.scale(axis === 'h' ? -1 : 1, axis === 'v' ? -1 : 1);
+    c.drawImage(src, 0, 0);
+    return t;
+  };
+  if (l) { l.c = mirror(l.c); updateLayerUI(); render(); toast('Flipped layer'); return; }
+  bakeTexts();
+  const W = base.width, H = base.height;
+  layers.forEach(lz => {
+    const nx = axis === 'h' ? W - (lz.x + lz.w) : lz.x;
+    const ny = axis === 'v' ? H - (lz.y + lz.h) : lz.y;
+    lz.c = mirror(lz.c); lz.x = nx; lz.y = ny;
+  });
+  const no = mirror(overlay);
+  base = mirror(base); bctx = base.getContext('2d');
+  overlay = no; octx = overlay.getContext('2d');
+  selection = null; updateSelInfo();
+  resizeView(); render(); updateLayerUI(); toast('Flipped canvas');
+}
+function bakeAdjust() {
+  if (filterCSS() === 'none') return toast('No adjustments to apply');
+  pushUndo();
+  const t = canvas(base.width, base.height), c = t.getContext('2d');
+  c.filter = filterCSS(); c.drawImage(base, 0, 0);
+  adjust = { ...DEFAULT_FILTER }; syncAdjustUI(); setBase(t);
+}
+
+/* ============================ deep fry ============================ */
+const FRY = {
+  light:  { q:72, passes:1, sat:2.2, con:1.25, nz:10, sh:0.55 },
+  medium: { q:48, passes:2, sat:3.2, con:1.45, nz:16, sh:0.85 },
+  deep:   { q:32, passes:3, sat:4.5, con:1.70, nz:24, sh:1.15 },
+  nuked:  { q:16, passes:5, sat:6.0, con:2.10, nz:38, sh:1.55 },
+};
+async function deepfry(level) {
+  if (!hasImage) return;
+  const P = FRY[level] || FRY.deep;
+  pushUndo();
+  toast('Frying…');
+  await new Promise(r => setTimeout(r, 20));
+  const l = targetLayer();
+  let c = clone(l ? l.c : base);
+  for (let i = 0; i < P.passes; i++) c = await fryPass(c, P, i);
+  if (l) { l.c = c; updateLayerUI(); render(); } else setBase(c);
+  toast('Deep fried: ' + level);
+}
+async function fryPass(src, P, i) {
+  const w = src.width, h = src.height;
+  const t = canvas(w, h), c = t.getContext('2d');
+  c.filter = `saturate(${P.sat * 100}%) contrast(${P.con * 100}%) brightness(${100 + i * 3}%)`;
+  c.drawImage(src, 0, 0);
+  const img = c.getImageData(0, 0, w, h);
+  if (P.sh) sharpen(img, w, h, P.sh);
+  if (P.nz) addNoise(img, P.nz);
+  c.putImageData(img, 0, 0);
+  const blob = await new Promise(r => t.toBlob(r, 'image/jpeg', P.q / 100));
+  const bmp = await createImageBitmap(blob);
+  const o = canvas(w, h); o.getContext('2d').drawImage(bmp, 0, 0);
+  if (bmp.close) bmp.close();
+  return o;
+}
+function sharpen(img, w, h, k) {
+  const src = new Uint8ClampedArray(img.data), d = img.data, c0 = 1 + 4 * k;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = (y * w + x) * 4;
+      for (let ch = 0; ch < 3; ch++) {
+        d[i + ch] = src[i + ch] * c0 - k * (src[i - 4 + ch] + src[i + 4 + ch] + src[i - w * 4 + ch] + src[i + w * 4 + ch]);
+      }
+    }
+  }
+}
+function addNoise(img, amount) {
+  const d = img.data, a = amount * 0.9;
+  for (let i = 0; i < d.length; i += 4) {
+    const n = (Math.random() * 2 - 1) * a;
+    d[i] += n; d[i + 1] += n; d[i + 2] += n;
+  }
+}
+
+/* ============================ background removal (server) ============================ */
+async function removeBgServer() {
+  if (!hasImage) return;
+  const url = ($('#bgUrl').value || '').trim();
+  if (!url) { toast('Set a server URL first'); return; }
+  const l = targetLayer();
+  const src = l ? l.c : base;
+  toast('Removing background…');
+  try {
+    const blob = await new Promise(r => src.toBlob(r, 'image/png'));
+    const fd = new FormData();
+    fd.append('file', blob, 'image.png');
+    const res = await fetch(url, { method:'POST', body:fd });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const out = await res.blob();
+    const bmp = await createImageBitmap(out);
+    pushUndo();
+    const c = canvas(bmp.width, bmp.height);
+    c.getContext('2d').drawImage(bmp, 0, 0);
+    if (bmp.close) bmp.close();
+    if (l) { l.c = c; updateLayerUI(); render(); } else setBase(c);
+    toast('Background removed' + (l ? ' from layer' : ''));
+  } catch (err) {
+    console.error(err);
+    toast('Failed: ' + err.message);
+  }
+}
+
+/* ============================ export ============================ */
+function composite(withAnnotations = true) {
+  const t = canvas(base.width, base.height), c = t.getContext('2d');
+  const bg = canvas(base.width, base.height), bc = bg.getContext('2d');
+  bc.filter = filterCSS(); bc.drawImage(base, 0, 0);
+  c.drawImage(bg, 0, 0);
+  for (const l of layers) c.drawImage(l.c, l.x, l.y, l.w, l.h);
+  if (withAnnotations) {
+    c.drawImage(overlay, 0, 0);
+    for (const tx of texts) paintText(c, tx);
+  }
+  return t;
+}
+function flatten(format, quality) {
+  const src = composite();
+  const t = canvas(src.width, src.height), c = t.getContext('2d');
+  if (format === 'image/jpeg') { c.fillStyle = '#fff'; c.fillRect(0, 0, t.width, t.height); }
+  c.drawImage(src, 0, 0);
+  return new Promise(res => t.toBlob(res, format, quality));
+}
+async function download() {
+  const fmt = $('#fmt').value, q = parseFloat($('#quality').value);
+  const blob = await flatten(fmt, q);
+  const ext = { 'image/png':'png', 'image/jpeg':'jpg', 'image/webp':'webp' }[fmt];
+  const name = (($('#fname').value || 'image').replace(/\.[^.]+$/, '')) + '.' + ext;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  toast('Downloaded ' + name);
+}
+async function copyToClipboard() {
+  if (!navigator.clipboard || !window.ClipboardItem) return toast('Clipboard API unavailable');
+  try {
+    const blob = await flatten('image/png');
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png':blob })]);
+    toast('Copied to clipboard');
+  } catch (err) { console.error(err); toast('Clipboard blocked — needs https/localhost'); }
+}
+
+/* ============================ UI wiring ============================ */
+function syncAdjustUI() {
+  for (const k of Object.keys(DEFAULT_FILTER)) $('#' + k).value = adjust[k];
+  $('#qRow').style.display = $('#fmt').value === 'image/png' ? 'none' : '';
+}
+function setRange(id, v) {
+  const el = $('#' + id); el.value = String(v);
+  el.dispatchEvent(new Event('input'));
+}
+function bindRange(id, key, out, xform = v => v) {
+  const el = $('#' + id);
+  el.addEventListener('input', () => {
+    const v = parseFloat(el.value);
+    if (out) $('#' + out).textContent = v;
+    if (key in adjust) { adjust[key] = xform(v); render(); }
+    else if (key in wand) { wand[key] = v; }
+    else if (key in fx) { fx[key] = v; }
+    else style[key] = xform(v);
+  });
+}
+bindRange('width', 'width', 'widthOut');
+bindRange('opacity', 'opacity', 'opacityOut');
+bindRange('fontSize', 'fontSize', 'fontSizeOut');
+bindRange('tolerance', 'tolerance', 'toleranceOut');
+bindRange('fxPixel', 'block', 'fxPixelOut');
+bindRange('fxBlur', 'soft', 'fxBlurOut');
+['brightness','contrast','saturate','grayscale','sepia'].forEach(k => bindRange(k, k));
+
+$('#color').addEventListener('input', e => {
+  style.color = e.target.value;
+  const t = texts.find(x => x.id === selText);
+  if (t) { const pre = snapshot(); t.color = style.color; render();
+           undoStack.push(pre); if (undoStack.length > MAX_UNDO) undoStack.shift(); redoStack.length = 0; updateHistoryUI(); }
+});
+$('#filled').addEventListener('change', e => style.filled = e.target.checked);
+$('#wandGlobal').addEventListener('change', e => wand.global = e.target.checked);
+$('#fmt').addEventListener('change', syncAdjustUI);
+$('#selAllBtn').onclick = selectAll;
+$('#selClearBtn').onclick = clearSelection;
+$('#fxPixelBtn').onclick = applyPixelate;
+$('#fxBlurBtn').onclick = applyBlur;
+$('#undoBtn').onclick = undo;
+$('#redoBtn').onclick = redo;
+$('#rotL').onclick = () => rotate(-90);
+$('#rotR').onclick = () => rotate(90);
+$('#flipH').onclick = () => flip('h');
+$('#flipV').onclick = () => flip('v');
+$('#newBtn').onclick = () => { $('#dialog').hidden = false; };
+$('#newCancel').onclick = () => { $('#dialog').hidden = true; };
+$('#newCreate').onclick = newCanvas;
+$('#newClearBtn').onclick = clearEverything;
+$('#layersToggle').onclick = toggleLayers;
+$('#layFront').onclick = () => layerMove('front');
+$('#layUp').onclick = () => layerMove('up');
+$('#layDown').onclick = () => layerMove('down');
+$('#layBack').onclick = () => layerMove('back');
+$('#layRotL').onclick = () => layerRotate(-90);
+$('#layRotR').onclick = () => layerRotate(90);
+$('#layDel').onclick = layerDelete;
+$('#layFlatten').onclick = flattenChecked;
+$('#applyAdj').onclick = bakeAdjust;
+$('#resetAdj').onclick = () => { adjust = { ...DEFAULT_FILTER }; syncAdjustUI(); render(); };
+$('#applyCropBtn').onclick = applyCrop;
+$('#cancelCropBtn').onclick = cancelCrop;
+$('#applyResize').onclick = () => {
+  const w = parseInt($('#rw').value, 10), h = parseInt($('#rh').value, 10);
+  if (!w || !h) return toast('Enter width and height');
+  resizeAll(w, h);
+};
+$('#fryBtn').onclick = () => deepfry($('#fryLevel').value);
+$('#bgBtn').onclick = removeBgServer;
+$('#copyBtn').onclick = copyToClipboard;
+$('#dlBtn').onclick = download;
+$('#openBtn').onclick = () => $('#file').click();
+$('#file').addEventListener('change', e => { const f = e.target.files[0]; if (f) loadBlob(f); e.target.value = ''; });
+
+/* mobile sheet */
+const panel = $('#panel'), backdrop = $('#backdrop');
+function toggleSheet(open) {
+  panel.classList.toggle('open', open);
+  backdrop.classList.toggle('show', open);
+}
+$('#sheetToggle').onclick = () => toggleSheet(!panel.classList.contains('open'));
+backdrop.onclick = () => toggleSheet(false);
+
+/* ============================ input: paste + drag/drop ============================ */
+const isImg = f => f && f.type && f.type.startsWith('image/');
+let pasteStamp = 0;
+function scheduleClipPaste() {
+  const t0 = Date.now();
+  setTimeout(() => { if (pasteStamp < t0 && clip) pasteClip(); }, 300);
+}
+window.addEventListener('paste', async e => {
+  pasteStamp = Date.now();
+  const dt = e.clipboardData; if (!dt) return;
+  let file = (Array.from(dt.files || []).filter(isImg))[0] || null;
+  if (!file) for (const it of dt.items || []) if (isImg(it)) { file = it.getAsFile(); break; }
+  if (file) {
+    e.preventDefault();
+    if (clip && clipSig != null) {
+      try {
+        const bmp = await createImageBitmap(file);
+        const mine = pixelSig(bmp) === clipSig;
+        if (bmp.close) bmp.close();
+        if (mine) { pasteClip(); return; }
+      } catch { /* fall through and treat it as a normal image */ }
+    }
+    loadBlob(file);
+    return;
+  }
+  const html = dt.getData ? dt.getData('text/html') : '';
+  const m = html && html.match(/<img[^>]+src=["']([^"']+)["']/i);
+  if (m) { e.preventDefault(); fetch(m[1]).then(r => r.blob()).then(loadBlob).catch(() => toast('Could not load pasted image')); return; }
+  if (clip) { e.preventDefault(); pasteClip(); return; }
+  toast('No image found on the clipboard');
+});
+['dragenter','dragover'].forEach(ev => stage.addEventListener(ev, e => { e.preventDefault(); stage.classList.add('dragover'); }));
+['dragleave','drop'].forEach(ev => stage.addEventListener(ev, e => { e.preventDefault(); if (ev === 'drop' || e.target === stage) stage.classList.remove('dragover'); }));
+stage.addEventListener('drop', e => {
+  e.preventDefault();
+  const dt = e.dataTransfer;
+  if (dt.files && dt.files.length) return loadBlob(dt.files[0]);
+  for (const it of (dt.items || [])) if (it.type.startsWith('image/')) return loadBlob(it.getAsFile());
+});
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => e.preventDefault());
+
+/* ============================ shortcuts ============================ */
+window.addEventListener('keydown', e => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+  else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
+  else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); if (hasImage) download(); }
+  else if (mod && e.shiftKey && e.key.toLowerCase() === 'c') {
+    if (hasImage && !window.getSelection().toString()) { e.preventDefault(); copyToClipboard(); }
+  }
+  else if (mod && e.key.toLowerCase() === 'c') {
+    if (hasImage && !window.getSelection().toString()) { e.preventDefault(); copySel(); }
+  }
+  else if (mod && e.key.toLowerCase() === 'v') {
+    // Deliberately NOT preventDefault: the real `paste` event must fire so images on the
+    // system clipboard still paste. It falls back to our buffer only if there is no image,
+    // and this timer covers the case where no paste event fires at all (empty clipboard).
+    scheduleClipPaste();
+  }
+  else if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); selectAll(); }
+  else if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (selText) { e.preventDefault(); deleteSelected(); }
+    else if (movingIds().length) { e.preventDefault(); layerDelete(); }
+  }
+  else if (e.key === 'Escape') {
+    if (!$('#dialog').hidden) { $('#dialog').hidden = true; return; }
+    if (crop) cancelCrop();
+    if (selection) clearSelection();
+    selText = null; selLayers = []; selLayer = null; drag = null;
+    updateLayerUI(); render();
+  }
+});
+
+/* ============================ new canvas ============================ */
+function newCanvas() {
+  const w = parseInt($('#newW').value, 10), h = parseInt($('#newH').value, 10);
+  if (!w || !h || w < 1 || h < 1) return toast('Enter a valid size');
+  const bg = $('#newBg').value;
+  const c = canvas(w, h);
+  if (bg !== 'transparent') { const x = c.getContext('2d'); x.fillStyle = bg; x.fillRect(0, 0, w, h); }
+  $('#dialog').hidden = true;
+  loadSource(c, w, h);
+}
+function clearEverything() {
+  hasImage = false;
+  layers = []; texts = []; selLayer = null; selText = null; selLayers = [];
+  checkedLayers = new Set(); flattenAnnotations = false;
+  undoStack = []; redoStack = []; selection = null; crop = null; cropDrag = null; gestureSnap = null;
+  base = canvas(1, 1); bctx = base.getContext('2d');
+  overlay = canvas(1, 1); octx = overlay.getContext('2d');
+  view.width = 1; view.height = 1;
+  view.style.display = 'none';
+  $('#hint').style.display = '';
+  $('#dialog').hidden = true;
+  updateHistoryUI(); updateSelInfo(); updateLayerUI(); syncAdjustUI();
+  toast('Cleared');
+}
+
+/* ============================ toast ============================ */
+let toastTimer;
+function toast(msg) {
+  const el = $('#toast'); el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2000);
+}
+
+/* ============================ boot ============================ */
+setTool('move');
+syncAdjustUI();
+updateLayerUI();
+updateSelInfo();
+// Default the background-removal endpoint to this origin's proxied path (nginx -> rembg on the
+// shared docker network). Falls back to the direct port when opened as a bare file.
+if (!$('#bgUrl').value) {
+  $('#bgUrl').value = location.protocol.startsWith('http')
+    ? '/bg/api/remove'
+    : 'http://localhost:3101/api/remove';
+}
+</script>
+</body>
+</html>
