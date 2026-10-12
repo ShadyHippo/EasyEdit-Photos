@@ -1,0 +1,20 @@
+Bundled fonts
+=============
+
+These five families are redistributed with Easy Edit under the SIL Open Font
+License, Version 1.1 (OFL-1.1), which permits bundling and redistribution.
+They are served locally so the editor never depends on fonts installed on the
+machine or on a CDN.
+
+  Anton             - Vernon Adams                      - OFL-1.1
+  Caveat            - Impallari Type (Pablo Impallari)  - OFL-1.1
+  Comic Neue        - Craig Rozynski                    - OFL-1.1
+  Inter             - Rasmus Andersson                  - OFL-1.1
+  Playfair Display  - Claus Eggers Sorensen             - OFL-1.1
+
+Full license text: https://openfontlicense.org/
+Reserved Font Names apply; the .woff2 files are unmodified subsets of the
+originals as served by Google Fonts (Latin subset).
+
+Files marked "-var" are variable fonts: a single file covers the whole weight
+range, which is why one file serves both 400 and 700.

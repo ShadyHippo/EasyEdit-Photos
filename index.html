@@ -10,6 +10,14 @@
 <link rel="icon" href="favicon-16.png" sizes="16x16" type="image/png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <style>
+  /* --- bundled fonts (OFL-1.1, see fonts/LICENSE.txt) - no system or CDN dependency --- */
+  @font-face { font-family:'Anton'; font-style:normal; font-weight:400; font-display:swap; src:url('fonts/anton-400.woff2') format('woff2'); }
+  @font-face { font-family:'Caveat'; font-style:normal; font-weight:400 700; font-display:swap; src:url('fonts/caveat-var.woff2') format('woff2'); }
+  @font-face { font-family:'Comic Neue'; font-style:normal; font-weight:400; font-display:swap; src:url('fonts/comic-neue-400.woff2') format('woff2'); }
+  @font-face { font-family:'Comic Neue'; font-style:normal; font-weight:700; font-display:swap; src:url('fonts/comic-neue-700.woff2') format('woff2'); }
+  @font-face { font-family:'Inter'; font-style:normal; font-weight:400 700; font-display:swap; src:url('fonts/inter-var.woff2') format('woff2'); }
+  @font-face { font-family:'Playfair Display'; font-style:normal; font-weight:400 700; font-display:swap; src:url('fonts/playfair-display-var.woff2') format('woff2'); }
+
   :root {
     --bg:#1b1c1f; --panel:#232428; --line:#34353a; --fg:#e7e7ea; --muted:#9a9ba1;
     --accent:#3b82f6; --danger:#ef4444; --safe-b: env(safe-area-inset-bottom, 0px);
@@ -202,7 +210,18 @@
       <label>Width <input type="range" id="width" min="1" max="80" value="6"><output id="widthOut">6</output></label>
       <label>Opacity <input type="range" id="opacity" min="0.05" max="1" step="0.05" value="1"><output id="opacityOut">1</output></label>
       <label>Fill <input type="checkbox" id="filled"></label>
-      <label id="fontRow">Font <input type="range" id="fontSize" min="8" max="220" value="48"><output id="fontSizeOut">48</output></label>
+      <div id="fontRow">
+        <label>Font <select id="fontFamily"></select></label>
+        <label>Size
+          <input type="range" id="fontSize" min="8" max="1200" value="48">
+          <output id="fontSizeOut">48</output>
+        </label>
+        <label>Exact <input type="number" id="fontSizeNum" min="1" max="6000" value="48"></label>
+        <div class="row">
+          <button id="boldBtn" title="Bold">Bold</button>
+          <button id="italicBtn" title="Italic">Italic</button>
+        </div>
+      </div>
     </section>
 
     <section id="wandSec" hidden>
@@ -240,7 +259,7 @@
     </section>
 
     <section id="adjSec">
-      <h3>Adjust background</h3>
+      <h3>Adjust</h3>
       <label>Bright <input type="range" id="brightness" min="0" max="200" value="100"></label>
       <label>Contrast <input type="range" id="contrast" min="0" max="200" value="100"></label>
       <label>Sat <input type="range" id="saturate" min="0" max="200" value="100"></label>
@@ -250,6 +269,7 @@
         <button id="applyAdj">Apply</button>
         <button id="resetAdj">Reset</button>
       </div>
+      <div class="note">Affects the final image, or just the selection if you have one. Apply bakes it in as its own layer.</div>
     </section>
 
     <section id="funSec">
@@ -261,6 +281,10 @@
         <option value="nuked">Nuked</option>
       </select></label>
       <button id="fryBtn">Deep fry</button>
+      <label>Blob size <input type="range" id="blobSize" min="20" max="800" value="160"><output id="blobSizeOut">160</output></label>
+      <label>Blob force <input type="range" id="blobStrength" min="-90" max="90" value="60"></label>
+      <button id="blobClear">Clear distort blobs</button>
+      <div class="note">With the Blob tool: tap to add, drag to move. They bulge the picture <b>before</b> frying - applied to what frying targets (the selected layer, or the background). UI only, never drawn into the image.</div>
     </section>
 
     <section id="bgSec">
@@ -272,11 +296,13 @@
 
     <section id="sizeSec">
       <h3>Resize</h3>
+      <label>Lock ratio <input type="checkbox" id="lockRatio" checked></label>
       <div class="row">
         <input type="number" id="rw" placeholder="width" min="1">
         <input type="number" id="rh" placeholder="height" min="1">
       </div>
       <button id="applyResize">Resize</button>
+      <div class="note">Locked: the other side follows as you type. Unlocked: distort freely - every layer, annotation and text scales with it.</div>
     </section>
 
     <section id="outSec">
@@ -331,7 +357,14 @@ const view = $('#view'), vctx = view.getContext('2d'), stage = $('#stage');
 const MAX_UNDO = 12;
 const HANDLE_PX = 26;            // crop handle hit size, in screen px (finger friendly)
 const DEFAULT_FILTER = { brightness:100, contrast:100, saturate:100, grayscale:0, sepia:0 };
-const FONTS = 'Impact, "Arial Black", "Helvetica Neue", sans-serif';
+// Bundled faces only - see fonts/LICENSE.txt. Nothing here relies on the host machine.
+const FONT_CHOICES = [
+  ['Anton',            'Heavy (Anton)'],
+  ['Inter',            'Clean (Inter)'],
+  ['Playfair Display', 'Serif (Playfair)'],
+  ['Comic Neue',       'Comic (Comic Neue)'],
+  ['Caveat',           'Handwritten (Caveat)'],
+];
 
 let base = document.createElement('canvas');        // the background (bottom of the stack)
 let bctx = base.getContext('2d');
@@ -358,9 +391,13 @@ let cropDrag = null;
 let selection = null;            // {x,y,w,h}; effects target this, else the whole image
 
 let adjust = { ...DEFAULT_FILTER };
-const style = { color:'#ff3b30', width:6, opacity:1, filled:false, fontSize:48, fontFamily:FONTS };
+const style = { color:'#ff3b30', width:6, opacity:1, filled:false, fontSize:48, family:'Anton', bold:false, italic:false };
 const wand = { tolerance:22, global:false };
 const fx = { block:14, soft:8 };   // pixelate block size, blur radius
+const blobCfg = { size:160, strength:60 };
+let blobs = [];                  // distort markers: UI only, never exported
+let hoverId = null;              // layer under the cursor (desktop hover feedback)
+let aspect = 1;                  // base.width / base.height, for the locked resize
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -371,7 +408,7 @@ const clone = src => { const c = canvas(src.width, src.height); c.getContext('2d
 const TOOLS = [
   ['move','Move'], ['marquee','Select'], ['text','Text'], ['brush','Pen'], ['highlight','Highlight'],
   ['line','Line'], ['arrow','Arrow'], ['rect','Rect'], ['ellipse','Ellipse'],
-  ['wand','Wand'], ['crop','Crop'],
+  ['wand','Wand'], ['crop','Crop'], ['blob','Blob'],
 ];
 const toolsEl = $('#tools');
 for (const [id, label] of TOOLS) {
@@ -404,8 +441,12 @@ function filterCSS() {
   return p.length ? p.join(' ') : 'none';
 }
 const textLines = t => String(t.text).split('\n');
+// one place that builds the font shorthand, so canvas, bbox and the editor agree
+function fontCss(t, scale = 1) {
+  return `${t.italic ? 'italic ' : ''}${t.bold ? 'bold ' : ''}${Math.round(t.size * scale)}px "${t.family}", sans-serif`;
+}
 function textBBox(t) {
-  vctx.save(); vctx.font = `${t.size}px ${t.font}`;
+  vctx.save(); vctx.font = fontCss(t);
   let w = 10;
   for (const l of textLines(t)) w = Math.max(w, vctx.measureText(l).width);
   vctx.restore();
@@ -415,7 +456,7 @@ function paintText(ctx, t) {
   ctx.save();
   ctx.globalAlpha = t.opacity;
   ctx.fillStyle = t.color;
-  ctx.font = `${t.size}px ${t.font}`;
+  ctx.font = fontCss(t);
   ctx.textBaseline = 'top';
   textLines(t).forEach((l, i) => ctx.fillText(l, t.x, t.y + i * t.size * 1.15));
   ctx.restore();
@@ -435,26 +476,40 @@ const viewScale = () => {
   return view.width ? r.width / view.width : 1;
 };
 
+function drawStack(ctx) {
+  ctx.drawImage(base, 0, 0);
+  for (const l of layers) ctx.drawImage(l.c, l.x, l.y, l.w, l.h);
+  ctx.drawImage(overlay, 0, 0);
+  for (const t of texts) paintText(ctx, t);
+}
 function render() {
   if (!hasImage) return;
   vctx.setTransform(1, 0, 0, 1, 0, 0);
   vctx.filter = 'none';
   vctx.clearRect(0, 0, view.width, view.height);
-  vctx.save();
-  vctx.filter = filterCSS();
-  vctx.drawImage(base, 0, 0);
-  vctx.restore();
-  vctx.filter = 'none';
-  for (const l of layers) vctx.drawImage(l.c, l.x, l.y, l.w, l.h);
-  vctx.drawImage(overlay, 0, 0);
-  for (const t of texts) paintText(vctx, t);
+  drawStack(vctx);
+  // Adjust now applies to the FINAL image, or only inside the selection if there is one.
+  const f = filterCSS();
+  if (f !== 'none') {
+    vctx.save();
+    if (selection) { vctx.beginPath(); vctx.rect(selection.x, selection.y, selection.w, selection.h); vctx.clip(); }
+    vctx.filter = f;
+    drawStack(vctx);
+    vctx.restore();
+    vctx.filter = 'none';
+  }
   const sel = texts.find(t => t.id === selText);
   if (sel) drawSelection(sel);
   for (const l of selectedLayerSet()) drawLayerOutline(l, l.id === selLayer);
+  if (tool === 'move' && hoverId && !selLayers.includes(hoverId)) {
+    const hl = layers.find(l => l.id === hoverId);
+    if (hl) drawHoverOutline(hl);
+  }
   if (drag && drag.shape) paintShape(vctx, drag.shape);
   if (crop) drawCropOverlay();
   else if (drag && drag.kind === 'marquee') drawSelectionOverlay(marqueeRect(drag));
   else if (selection) drawSelectionOverlay(selection);
+  for (const b of blobs) drawBlob(b);        // UI only, above everything
   updateSelBar();
 }
 
@@ -499,13 +554,15 @@ function syncOverlaySize() {
 function snapshot() {
   return { base: clone(base), overlay: clone(overlay),
            layers: layers.map(l => ({ ...l, c: clone(l.c) })),
-           texts: texts.map(t => ({ ...t })), sel: selText, selLayer, selLayers: [...selLayers] };
+           texts: texts.map(t => ({ ...t })), blobs: blobs.map(b => ({ ...b })),
+           sel: selText, selLayer, selLayers: [...selLayers] };
 }
 function restore(s) {
   base = s.base; bctx = base.getContext('2d');
   overlay = s.overlay; octx = overlay.getContext('2d');
   layers = s.layers.map(l => ({ ...l, c: clone(l.c) }));
   texts = s.texts.map(t => ({ ...t }));
+  blobs = (s.blobs || []).map(b => ({ ...b }));
   selText = s.sel; selLayer = s.selLayer; selLayers = s.selLayers ? [...s.selLayers] : [];
   resizeView(); render(); updateHistoryUI(); updateSelInfo(); updateLayerUI();
 }
@@ -538,6 +595,7 @@ function resizeView() {
   view.style.display = 'block';
   $('#hint').style.display = 'none';
   $('#rw').value = base.width; $('#rh').value = base.height;
+  aspect = base.width / base.height;
   syncOverlaySize();
 }
 function setBase(c) {
@@ -737,7 +795,27 @@ view.addEventListener('pointerdown', e => {
     if (hit) { selectText(hit); startTextDrag(hit, p, e); return; }
     createTextBox(p); return;
   }
+  if (tool === 'blob') {
+    const hit = blobs.find(b => Math.hypot(p.x - b.x, p.y - b.y) <= b.r);
+    if (hit) { beginGesture(); drag = { kind:'blob', id:hit.id }; }
+    else {
+      beginGesture();
+      const b = { id: uid(), x:p.x, y:p.y, r: blobCfg.size, str: blobCfg.strength / 100 };
+      blobs.push(b);
+      drag = { kind:'blob', id:b.id };
+    }
+    capture(); render(); return;
+  }
   if (tool === 'move') {
+    // Alt-click cycles down through the stack under the cursor (for buried layers)
+    if (e.altKey) {
+      const stack = layersAt(p);
+      if (stack.length) {
+        const cur = stack.findIndex(z => z.id === selLayer);
+        setSelection([stack[(cur + 1) % stack.length].id]);
+        render(); return;
+      }
+    }
     const hh = handleHit(e);
     if (hh) {
       if (hh.kind === 'move') {
@@ -791,11 +869,19 @@ function startTextDrag(t, p, e) {
 view.addEventListener('pointermove', e => {
   if (!hasImage) return;
   const p = toCanvas(e);
+  if (tool === 'move' && !drag && !cropDrag) {
+    const stack = layersAt(p);
+    const top = stack.length ? stack[0].id : null;
+    if (top !== hoverId) { hoverId = top; render(); }
+  }
   if (cropDrag) { applyCropDrag(p); render(); return; }
   if (!drag) return;
   if (drag.kind === 'text') {
     const t = texts.find(x => x.id === drag.id); if (!t) return;
     t.x = clamp(p.x - drag.ox, -50, base.width); t.y = clamp(p.y - drag.oy, -50, base.height);
+  } else if (drag.kind === 'blob') {
+    const b = blobs.find(z => z.id === drag.id); if (!b) return;
+    b.x = p.x; b.y = p.y;
   } else if (drag.kind === 'layer') {
     const dx = p.x - drag.ox, dy = p.y - drag.oy;
     for (const o of drag.orig) {
@@ -819,6 +905,7 @@ function endPointer() {
   if (!drag) return;
   const d = drag; drag = null;
   if (d.kind === 'text') { commitGesture(true); render(); return; }
+  if (d.kind === 'blob') { commitGesture(true); render(); return; }
   if (d.kind === 'layer' || d.kind === 'layerResize') { commitGesture(true); updateLayerUI(); render(); return; }
   if (d.kind === 'marquee') {
     const r = marqueeRect(d);
@@ -832,15 +919,26 @@ function endPointer() {
   commitGesture(true);
   render();
 }
+view.addEventListener('pointerleave', () => { if (hoverId) { hoverId = null; render(); } });
 view.addEventListener('pointerup', endPointer);
 view.addEventListener('pointercancel', () => { drag = null; cropDrag = null; render(); });
 
 /* ============================ text boxes ============================ */
-function selectText(t) { selText = t.id; updateSelBar(); }
+function selectText(t) {
+  selText = t.id;
+  style.family = t.family; style.bold = t.bold; style.italic = t.italic;
+  $('#fontFamily').value = t.family;
+  $('#fontSize').value = Math.min(t.size, 1200);
+  $('#fontSizeOut').textContent = Math.round(t.size);
+  $('#fontSizeNum').value = Math.round(t.size);
+  syncStyleButtons();
+  updateSelBar();
+}
 function createTextBox(p) {
   const pre = snapshot();
   const t = { id: uid(), x: p.x, y: p.y, text: '', color: style.color, size: style.fontSize,
-              font: style.fontFamily, opacity: Math.max(0.35, style.opacity) };
+              family: style.family, bold: style.bold, italic: style.italic,
+              opacity: Math.max(0.35, style.opacity) };
   texts.push(t); selText = t.id;
   openTextEditor(t, pre, true);
 }
@@ -858,7 +956,7 @@ function openTextEditor(t, pre, isNew) {
   ta.style.left = ((r.left - sr.left) + t.x * scale) + 'px';
   ta.style.top = ((r.top - sr.top) + t.y * scale) + 'px';
   ta.style.color = t.color;
-  ta.style.font = `${t.size * scale}px ${t.font}`;
+  ta.style.font = fontCss(t, scale);
   stage.appendChild(ta);
   const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px';
                        ta.style.width = Math.max(60, ta.scrollWidth + 10) + 'px'; };
@@ -1080,7 +1178,7 @@ function applyCompositeEffect(kind) {
   const r = regionRect();
   if (r.w < 2 || r.h < 2) return;
   pushUndo();
-  const src = composite(false);
+  const src = composite(false, false);
   const patch = canvas(r.w, r.h);
   const pc = patch.getContext('2d');
   pc.drawImage(src, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
@@ -1130,11 +1228,13 @@ async function copySel() {
   // Set this BEFORE any await: paste routing must be able to recognise our own copy
   // immediately, even if the user hits Ctrl+V before the clipboard mirror finishes.
   clipSig = pixelSig(clip.c);
+  // Tell the user now rather than after the async clipboard write - the mirror is
+  // best-effort and can be slow, and the copy is already usable without it.
+  toast(clip.region ? 'Copied selection' : 'Copied layer');
   try {
     const blob = await new Promise(r => clip.c.toBlob(r, 'image/png'));
     await navigator.clipboard.write([ new ClipboardItem({ 'image/png': blob }) ]);
   } catch { /* insecure context: internal buffer only, routing still works by pixels */ }
-  toast(clip.region ? 'Copied selection' : 'Copied layer');
 }
 function pasteClip() {
   if (!clip) { toast('Nothing to paste'); return; }
@@ -1360,6 +1460,7 @@ function resizeAll(w, h) {
   const no = canvas(w, h); no.getContext('2d').drawImage(overlay, 0, 0, w, h);
   layers.forEach(l => { l.x *= kx; l.y *= ky; l.w *= kx; l.h *= ky; });
   texts.forEach(t => { t.x *= kx; t.y *= ky; t.size *= ky; });
+  blobs.forEach(b => { b.x *= kx; b.y *= ky; b.r *= (kx + ky) / 2; });
   base = nb; bctx = base.getContext('2d');
   overlay = no; octx = overlay.getContext('2d');
   selection = null; updateSelInfo();
@@ -1414,12 +1515,104 @@ function flip(axis) {
   selection = null; updateSelInfo();
   resizeView(); render(); updateLayerUI(); toast('Flipped canvas');
 }
-function bakeAdjust() {
+// Bake the adjustments as a layer: the whole final image, or just the selection.
+// The patch already contains the filtered pixels, so the sliders reset - otherwise
+// the live filter would be applied a second time on top of it.
+function applyAdjust() {
+  if (!hasImage) return;
   if (filterCSS() === 'none') return toast('No adjustments to apply');
+  const r = regionRect();
   pushUndo();
-  const t = canvas(base.width, base.height), c = t.getContext('2d');
-  c.filter = filterCSS(); c.drawImage(base, 0, 0);
-  adjust = { ...DEFAULT_FILTER }; syncAdjustUI(); setBase(t);
+  const src = composite(false, true);
+  const patch = canvas(r.w, r.h);
+  patch.getContext('2d').drawImage(src, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+  const l = { id: uid(), c: patch, x: r.x, y: r.y, w: r.w, h: r.h };
+  layers.push(l);
+  setSelection([l.id]);
+  adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
+  render();
+  toast(selection ? 'Adjusted the selection' : 'Adjusted the image');
+}
+
+/* ============================ distort blobs (UI only) ============================ */
+function drawBlob(b) {
+  const s = viewScale(), t = 13 / s;
+  vctx.save();
+  vctx.beginPath(); vctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+  vctx.fillStyle = 'rgba(236,72,153,.13)'; vctx.fill();
+  vctx.strokeStyle = '#ec4899'; vctx.lineWidth = 2 / s; vctx.setLineDash([8 / s, 6 / s]);
+  vctx.stroke();
+  vctx.setLineDash([]);
+  vctx.fillStyle = '#ec4899';
+  vctx.fillRect(b.x - t / 2, b.y - t / 2, t, t);
+  vctx.restore();
+}
+// Inverse-mapped bulge / pinch. strength > 0 magnifies, < 0 pinches.
+function bulge(src, cx, cy, r, strength) {
+  const w = src.width, h = src.height;
+  const out = canvas(w, h), oc = out.getContext('2d');
+  oc.drawImage(src, 0, 0);
+  const sd = src.getContext('2d').getImageData(0, 0, w, h).data;
+  const img = oc.getImageData(0, 0, w, h), od = img.data;
+  const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(w, Math.ceil(cx + r));
+  const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(h, Math.ceil(cy + r));
+  for (let y = y0; y < y1; y++) {
+    const dy = y - cy;
+    for (let x = x0; x < x1; x++) {
+      const dx = x - cx;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d >= r) continue;
+      const t = d / r;
+      const f = 1 - strength * (1 - t * t);
+      const sx = Math.round(cx + dx * f), sy = Math.round(cy + dy * f);
+      if (sx < 0 || sy < 0 || sx >= w || sy >= h) continue;
+      const si = (sy * w + sx) * 4, di = (y * w + x) * 4;
+      od[di] = sd[si]; od[di + 1] = sd[si + 1]; od[di + 2] = sd[si + 2]; od[di + 3] = sd[si + 3];
+    }
+  }
+  oc.putImageData(img, 0, 0);
+  return out;
+}
+// Blobs live in composition space; map them onto whatever is about to be fried.
+function warpedSource() {
+  const l = targetLayer();
+  let c = clone(l ? l.c : base);
+  if (!blobs.length) return c;
+  const kx = l ? c.width / l.w : 1, ky = l ? c.height / l.h : 1;
+  const ox = l ? l.x : 0, oy = l ? l.y : 0;
+  for (const b of blobs) c = bulge(c, (b.x - ox) * kx, (b.y - oy) * ky, b.r * kx, b.str);
+  return c;
+}
+
+/* ============================ desktop layer picking ============================ */
+function layersAt(p) {                       // front-most first
+  const out = [];
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const l = layers[i];
+    if (p.x >= l.x && p.x <= l.x + l.w && p.y >= l.y && p.y <= l.y + l.h) out.push(l);
+  }
+  return out;
+}
+function drawHoverOutline(l) {
+  const s = viewScale();
+  vctx.save();
+  vctx.strokeStyle = '#60a5fa'; vctx.lineWidth = 1.5 / s;
+  vctx.setLineDash([4 / s, 4 / s]);
+  vctx.strokeRect(l.x, l.y, l.w, l.h);
+  vctx.restore();
+}
+let nudgeTimer = null;
+function nudgeSelected(dx, dy) {
+  const ids = movingIds();
+  if (!ids.length) return;
+  if (!nudgeTimer) pushUndo();               // one undo entry per burst of arrow presses
+  clearTimeout(nudgeTimer);
+  nudgeTimer = setTimeout(() => { nudgeTimer = null; }, 700);
+  for (const id of ids) {
+    const l = layers.find(z => z.id === id);
+    if (l) { l.x += dx; l.y += dy; }
+  }
+  render();
 }
 
 /* ============================ deep fry ============================ */
@@ -1436,7 +1629,7 @@ async function deepfry(level) {
   toast('Frying…');
   await new Promise(r => setTimeout(r, 20));
   const l = targetLayer();
-  let c = clone(l ? l.c : base);
+  let c = warpedSource();                    // distort blobs are applied before frying
   for (let i = 0; i < P.passes; i++) c = await fryPass(c, P, i);
   if (l) { l.c = c; updateLayerUI(); render(); } else setBase(c);
   toast('Deep fried: ' + level);
@@ -1504,16 +1697,18 @@ async function removeBgServer() {
 }
 
 /* ============================ export ============================ */
-function composite(withAnnotations = true) {
-  const t = canvas(base.width, base.height), c = t.getContext('2d');
-  const bg = canvas(base.width, base.height), bc = bg.getContext('2d');
-  bc.filter = filterCSS(); bc.drawImage(base, 0, 0);
-  c.drawImage(bg, 0, 0);
-  for (const l of layers) c.drawImage(l.c, l.x, l.y, l.w, l.h);
+function composite(withAnnotations = true, withFilter = true) {
+  const raw = canvas(base.width, base.height), rc = raw.getContext('2d');
+  rc.drawImage(base, 0, 0);
+  for (const l of layers) rc.drawImage(l.c, l.x, l.y, l.w, l.h);
   if (withAnnotations) {
-    c.drawImage(overlay, 0, 0);
-    for (const tx of texts) paintText(c, tx);
+    rc.drawImage(overlay, 0, 0);
+    for (const tx of texts) paintText(rc, tx);
   }
+  const f = withFilter ? filterCSS() : 'none';
+  if (f === 'none') return raw;
+  const t = canvas(raw.width, raw.height), c = t.getContext('2d');
+  c.filter = f; c.drawImage(raw, 0, 0);
   return t;
 }
 function flatten(format, quality) {
@@ -1559,12 +1754,14 @@ function bindRange(id, key, out, xform = v => v) {
     if (key in adjust) { adjust[key] = xform(v); render(); }
     else if (key in wand) { wand[key] = v; }
     else if (key in fx) { fx[key] = v; }
+    else if (key in blobCfg) { blobCfg[key] = v; }
     else style[key] = xform(v);
   });
 }
 bindRange('width', 'width', 'widthOut');
 bindRange('opacity', 'opacity', 'opacityOut');
-bindRange('fontSize', 'fontSize', 'fontSizeOut');
+bindRange('blobSize', 'size', 'blobSizeOut');
+bindRange('blobStrength', 'strength');
 bindRange('tolerance', 'tolerance', 'toleranceOut');
 bindRange('fxPixel', 'block', 'fxPixelOut');
 bindRange('fxBlur', 'soft', 'fxBlurOut');
@@ -1602,7 +1799,64 @@ $('#layRotL').onclick = () => layerRotate(-90);
 $('#layRotR').onclick = () => layerRotate(90);
 $('#layDel').onclick = layerDelete;
 $('#layFlatten').onclick = flattenChecked;
-$('#applyAdj').onclick = bakeAdjust;
+$('#applyAdj').onclick = applyAdjust;
+$('#blobClear').onclick = () => {
+  if (!blobs.length) return;
+  const pre = snapshot(); blobs = []; commitPre(pre); render();
+};
+
+/* ---- bundled font family + bold/italic ---- */
+const fontSel = $('#fontFamily');
+for (const [value, label] of FONT_CHOICES) {
+  const o = document.createElement('option');
+  o.value = value; o.textContent = label;
+  fontSel.appendChild(o);
+}
+fontSel.value = style.family;
+function syncStyleButtons() {
+  $('#boldBtn').classList.toggle('active', style.bold);
+  $('#italicBtn').classList.toggle('active', style.italic);
+}
+function applyToSelectedText(fn) {
+  const t = texts.find(x => x.id === selText);
+  if (!t) return;
+  const pre = snapshot(); fn(t); render(); commitPre(pre);
+}
+fontSel.addEventListener('change', () => {
+  style.family = fontSel.value;
+  applyToSelectedText(t => { t.family = style.family; });
+});
+$('#boldBtn').onclick = () => {
+  style.bold = !style.bold; syncStyleButtons();
+  applyToSelectedText(t => { t.bold = style.bold; });
+};
+$('#italicBtn').onclick = () => {
+  style.italic = !style.italic; syncStyleButtons();
+  applyToSelectedText(t => { t.italic = style.italic; });
+};
+// One font size, two inputs (slider for feel, number for 4K-sized type).
+function setFontSize(v) {
+  v = clamp(Math.round(v) || 1, 1, 6000);
+  style.fontSize = v;
+  $('#fontSize').value = Math.min(v, 1200);
+  $('#fontSizeOut').textContent = v;
+  $('#fontSizeNum').value = v;
+  const t = texts.find(x => x.id === selText);
+  if (t) { t.size = v; render(); }
+}
+$('#fontSize').addEventListener('input', e => setFontSize(+e.target.value));
+$('#fontSizeNum').addEventListener('input', e => setFontSize(+e.target.value));
+
+/* ---- linked resize dimensions ---- */
+function syncRatio(from) {
+  if (!$('#lockRatio').checked) return;
+  const w = parseInt($('#rw').value, 10), h = parseInt($('#rh').value, 10);
+  if (from === 'w' && w > 0) $('#rh').value = Math.max(1, Math.round(w / aspect));
+  else if (from === 'h' && h > 0) $('#rw').value = Math.max(1, Math.round(h * aspect));
+}
+$('#rw').addEventListener('input', () => syncRatio('w'));
+$('#rh').addEventListener('input', () => syncRatio('h'));
+$('#lockRatio').addEventListener('change', () => { if ($('#lockRatio').checked) syncRatio('w'); });
 $('#resetAdj').onclick = () => { adjust = { ...DEFAULT_FILTER }; syncAdjustUI(); render(); };
 $('#applyCropBtn').onclick = applyCrop;
 $('#cancelCropBtn').onclick = cancelCrop;
@@ -1690,6 +1944,12 @@ window.addEventListener('keydown', e => {
     scheduleClipPaste();
   }
   else if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); selectAll(); }
+  else if (e.key.startsWith('Arrow') && movingIds().length) {
+    e.preventDefault();
+    const step = e.shiftKey ? 10 : 1;
+    nudgeSelected(e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0,
+                  e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0);
+  }
   else if (e.key === 'Delete' || e.key === 'Backspace') {
     if (selText) { e.preventDefault(); deleteSelected(); }
     else if (movingIds().length) { e.preventDefault(); layerDelete(); }
@@ -1740,6 +2000,7 @@ setTool('move');
 syncAdjustUI();
 updateLayerUI();
 updateSelInfo();
+syncStyleButtons();
 // Default the background-removal endpoint to this origin's proxied path (nginx -> rembg on the
 // shared docker network). Falls back to the direct port when opened as a bare file.
 if (!$('#bgUrl').value) {

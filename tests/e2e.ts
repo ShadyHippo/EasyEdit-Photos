@@ -1,25 +1,6 @@
-// EasyEdit end-to-end suite.
-//
-// Drives real headless Chromium over the Chrome DevTools Protocol using real input
-// events - mouse, touch and keyboard - then inspects real canvas pixels. It is
-// deliberately behavioural: it asserts on rendered output and on state the user
-// could observe, not on internals, so refactors don't produce false failures.
-//
-// Every check here exists because something broke or was about to. Notable ones:
-//   * a blank canvas from `display:none` that nothing ever undid
-//   * a text tool that looked fine but was destroyed by a focus race on pointerdown
-//   * Ctrl+V swallowing the native paste event, killing external pastes
-//   * clicking a layer inside a multi-selection collapsing the group
-//   * a resize-handle geometry error that only appeared away from the canvas edge
-//
-// Run it via tests/run.sh, which provides chromium, the stub server and fixtures.
-// Paths are env-driven so the rig can be relocated (see run.sh).
-
-const PORT = Number(Deno.env.get("CDP_PORT") ?? 9222);
-const STUB = `http://127.0.0.1:${Deno.env.get("STUB_PORT") ?? 7999}`;
-const PAGE_URL = Deno.env.get("EASYEDIT_URL") ?? "http://localhost:3100/";
-const WORK = Deno.env.get("EASYEDIT_WORK") ?? `${Deno.env.get("TMPDIR") ?? "/tmp"}/easyedit-test`;
-const FIX = Deno.env.get("EASYEDIT_FIXTURES") ?? `${WORK}/fixtures`;
+// Expanded CDP suite: crop handles, text boxes, wand, deepfry, bg server, mobile.
+const PORT = 9222, STUB = "http://127.0.0.1:7999";
+const PAGE_URL = "http://localhost:3100/";
 const b64 = (s: string) => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 
 let ws: WebSocket; let msgId = 0;
@@ -99,18 +80,18 @@ async function main() {
   };
   await send("Page.enable"); await send("Runtime.enable");
   await send("Emulation.setFocusEmulationEnabled", { enabled: true });
-  await send("Browser.grantPermissions", { origin: new URL(PAGE_URL).origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] }).catch(() => {});
-  await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: `${WORK}/dl`, eventsEnabled: true }).catch(() => {});
+  await send("Browser.grantPermissions", { origin: "http://localhost:3100", permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] }).catch(() => {});
+  await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: "/tmp/dl", eventsEnabled: true }).catch(() => {});
 
-  const raw = new Uint8Array(await Deno.readFile(`${FIX}/edtest.png`));
+  const raw = new Uint8Array(await Deno.readFile("/tmp/edtest.png"));
   let bin = ""; for (let i = 0; i < raw.length; i += 8192) bin += String.fromCharCode(...raw.subarray(i, i + 8192));
   const pngB64 = btoa(bin);
 
-  const raw2 = new Uint8Array(await Deno.readFile(`${FIX}/edgrad.png`));
+  const raw2 = new Uint8Array(await Deno.readFile("/tmp/edgrad.png"));
   let bin2 = ""; for (let i = 0; i < raw2.length; i += 8192) bin2 += String.fromCharCode(...raw2.subarray(i, i + 8192));
   const gradB64 = btoa(bin2);
 
-  const raw3 = new Uint8Array(await Deno.readFile(`${FIX}/edsmall.png`));
+  const raw3 = new Uint8Array(await Deno.readFile("/tmp/edsmall.png"));
   let bin3 = ""; for (let i = 0; i < raw3.length; i += 8192) bin3 += String.fromCharCode(...raw3.subarray(i, i + 8192));
   const smallB64 = btoa(bin3);
 
@@ -561,7 +542,7 @@ async function main() {
   check("exported image includes text boxes", withText !== withoutText, { withText, withoutText });
   await evaluate(`undo()`); await sleep(250);
   check("undo restores deleted text", (await evaluate(`texts.length`)) === 1, await evaluate(`texts.length`));
-  await shot(`${WORK}/m_1_text.png`);
+  await shot("/tmp/m_1_text.png");
 
   // ---- 6. magic wand ----
   await evaluate(`selLayer = null; updateLayerUI();`);
@@ -604,7 +585,7 @@ async function main() {
   await dragPx(insidePt.x, insidePt.y, insidePt.x - 60, insidePt.y - 40);
   const c4 = await evaluate(`({...crop})`);
   check("crop interior drag moves the selection", c4.x < c3.x && c4.y < c3.y && Math.abs(c4.w - c3.w) < 4, { before: { x: c3.x, y: c3.y }, after: { x: c4.x, y: c4.y } });
-  await shot(`${WORK}/m_2_crop.png`);
+  await shot("/tmp/m_2_crop.png");
 
   const beforeApply = await evaluate(`({...crop})`);
   await evaluate(`document.querySelector('#applyCropBtn').click()`); await sleep(400);
@@ -630,7 +611,7 @@ async function main() {
   check("deepfry runs and reports", /Deep fried/.test(fried), fried);
   check("deepfry changes the image", fryDiff > 100000, { changed: fryDiff });
   check("deepfry increases saturation", sat > 0.5, { avgSaturation: Number(sat.toFixed(3)) });
-  await shot(`${WORK}/m_3_fried.png`);
+  await shot("/tmp/m_3_fried.png");
   await evaluate(`undo()`); await sleep(200);
 
   // ---- 9. background removal via stub server ----
@@ -658,7 +639,7 @@ async function main() {
   const bglAfter = await evaluate(`(function(){const l=layers.find(x=>x.id===selLayer)||layers[layers.length-1];return {viewW:view.width, layerCW:l.c.width, layerCH:l.c.height};})()`);
   check("bg removal targets the selected layer", /from layer/.test(bglToast) && bglAfter.layerCW === 200 && bglAfter.viewW === bgl.viewW, { toast: bglToast, before: bgl, after: bglAfter });
   await evaluate(`undo(); selLayer=null; updateLayerUI();`); await sleep(200);
-  await shot(`${WORK}/m_4_bg.png`);
+  await shot("/tmp/m_4_bg.png");
   await evaluate(`undo()`); await sleep(200);
 
   // ---- 10. mobile layout ----
@@ -678,7 +659,7 @@ async function main() {
 
   await evaluate(`document.querySelector('#sheetToggle').click()`); await sleep(400);
   check("mobile: Controls opens the sheet", (await evaluate(`document.querySelector('#panel').classList.contains('open')`)) === true);
-  await shot(`${WORK}/m_5_mobile_sheet.png`);
+  await shot("/tmp/m_5_mobile_sheet.png");
   await evaluate(`document.querySelector('#backdrop').click()`); await sleep(400);
   check("mobile: backdrop closes the sheet", (await evaluate(`document.querySelector('#panel').classList.contains('open')`)) === false);
 
@@ -688,7 +669,7 @@ async function main() {
   await touchDrag(rm.left + rm.width * 0.25, rm.top + rm.height * 0.25, rm.left + rm.width * 0.7, rm.top + rm.height * 0.6);
   const touchDiff = await diffFrom();
   check("mobile: touch drag draws", touchDiff > 300, { changed: touchDiff });
-  await shot(`${WORK}/m_6_mobile_draw.png`);
+  await shot("/tmp/m_6_mobile_draw.png");
   await evaluate(`undo()`); await sleep(200);
 
   await evaluate(`document.querySelector('[data-tool=crop]').click()`);
@@ -706,10 +687,10 @@ async function main() {
   await sleep(300);
 
   // ---- 11. export / copy regression ----
-  try { await Deno.remove(`${WORK}/dl`, { recursive: true }); } catch {}
-  await Deno.mkdir(`${WORK}/dl`, { recursive: true }).catch(() => {});
+  try { await Deno.remove("/tmp/dl", { recursive: true }); } catch {}
+  await Deno.mkdir("/tmp/dl", { recursive: true }).catch(() => {});
   await evaluate(`document.querySelector('#dlBtn').click()`); await sleep(1200);
-  const dl = [...Deno.readDirSync(`${WORK}/dl`)].map(f => f.name);
+  const dl = [...Deno.readDirSync("/tmp/dl")].map(f => f.name);
   check("download still writes a file", dl.length > 0, dl);
   const cp = await evaluate(`(async()=>{await copyToClipboard();await new Promise(r=>setTimeout(r,400));return document.querySelector('#toast').textContent;})()`, true);
   check("copy to clipboard still works", /Copied/.test(String(cp)), String(cp));
@@ -748,8 +729,11 @@ async function main() {
   // Ctrl+C fills the internal buffer from the selected layer (not a false positive)
   await evaluate(`setSelection([layers[0].id]); document.querySelector('#toast').textContent='';`);
   await pressKey("c", "KeyC", 67);
-  await sleep(250);
-  const ct = await evaluate(`document.querySelector('#toast').textContent`);
+  let ct = "";
+  for (let i = 0; i < 20 && !/Copied/.test(ct); i++) {
+    await sleep(60);
+    ct = await evaluate(`document.querySelector('#toast').textContent`);
+  }
   check("Ctrl+C copies the selected layer", /Copied layer/.test(ct), ct);
 
   // the export Copy button still puts the flattened image on the system clipboard
@@ -816,6 +800,225 @@ async function main() {
   const vizDiff = await evaluate(`(function(){const a=vctx.getImageData(0,0,view.width,view.height).data;const b=window.__vizSnap;
      let n=0; for(let i=0;i<a.length;i+=4) if(Math.abs(a[i]-b[i])>8||Math.abs(a[i+1]-b[i+1])>8) n++; return n;})()`);
   check("selected layers are outlined on the canvas", vizDiff > 500, { changed: vizDiff });
+
+  // ============ 11e. desktop picking: hover, alt-click cycle, arrow nudge ============
+  await evaluate(`clearEverything()`);
+  await evaluate(`(function(){document.querySelector('#newW').value='800';document.querySelector('#newH').value='600';
+    document.querySelector('#newBg').value='#ffffff';document.querySelector('#newCreate').click();return 1;})()`);
+  await sleep(250);
+  for (let k = 0; k < 2; k++) {
+    await evaluate(`(async()=>{const b=Uint8Array.from(atob(window.__small),c=>c.charCodeAt(0));
+      const dt=new DataTransfer(); dt.items.add(new File([b],'p'+Math.random()+'.png',{type:'image/png'}));
+      window.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
+      await new Promise(r=>setTimeout(r,600));})()`, true);
+  }
+  await evaluate(`layers[0].x=100; layers[0].y=100; layers[1].x=250; layers[1].y=180;
+    document.querySelector('[data-tool=move]').click(); setSelection([]); hoverId=null; render();`);
+  const pickPt = await evaluate(`(function(){const l=layers[1];const r=view.getBoundingClientRect();const s=r.width/view.width;
+     return {x:r.left+(l.x+l.w/2)*s, y:r.top+(l.y+l.h/2)*s};})()`);
+  await evaluate(`window.__preHover = vctx.getImageData(0,0,view.width,view.height).data.slice();`);
+  await mouse("mouseMoved", pickPt.x, pickPt.y, 0);
+  await sleep(200);
+  const hov = await evaluate(`({idx: hoverId ? layers.findIndex(l=>l.id===hoverId) : -1})`);
+  check("hovering marks the layer under the cursor", hov.idx === 1, hov);
+  const hovDiff = await evaluate(`(function(){const a=vctx.getImageData(0,0,view.width,view.height).data,b=window.__preHover;
+     let n=0;for(let i=0;i<a.length;i+=4) if(Math.abs(a[i]-b[i])>8||Math.abs(a[i+2]-b[i+2])>8) n++; return n;})()`);
+  check("hover draws an outline on the canvas", hovDiff > 100, { changed: hovDiff });
+
+  const stackPt = await evaluate(`(function(){const r=view.getBoundingClientRect();const s=r.width/view.width;
+     return {x:r.left+300*s, y:r.top+220*s};})()`);
+  const altClick = async () => {
+    for (const type of ["mousePressed", "mouseReleased"])
+      await send("Input.dispatchMouseEvent", { type, x: stackPt.x, y: stackPt.y, button: "left", buttons: 1, clickCount: 1, modifiers: 1 });
+    await sleep(140);
+    return await evaluate(`selLayer ? layers.findIndex(l => l.id === selLayer) : -1`);
+  };
+  await evaluate(`setSelection([]); render();`);
+  const a1 = await altClick();
+  const a2 = await altClick();
+  check("alt-click cycles down through the stack", a1 === 1 && a2 === 0, { first: a1, second: a2 });
+
+  await evaluate(`document.activeElement && document.activeElement.blur(); setSelection([layers[0].id]); render();`);
+  const nx0 = await evaluate(`Math.round(layers[0].x)`);
+  await pressKey("ArrowRight", "ArrowRight", 39, 0);
+  await sleep(80);
+  const nx1 = await evaluate(`Math.round(layers[0].x)`);
+  check("arrow key nudges by 1px", nx1 === nx0 + 1, { before: nx0, after: nx1 });
+  await pressKey("ArrowRight", "ArrowRight", 39, 8);
+  await sleep(80);
+  const nx2 = await evaluate(`Math.round(layers[0].x)`);
+  check("shift+arrow nudges by 10px", nx2 === nx1 + 10, { before: nx1, after: nx2 });
+  await evaluate(`undo()`); await sleep(200);
+  const nx3 = await evaluate(`Math.round(layers[0].x)`);
+  check("a burst of nudges collapses into one undo step", nx3 === nx0, { expected: nx0, got: nx3 });
+
+  // ============ 11f. adjust acts on the final image / the selection ============
+  // Self-contained: builds its own fixture with explicit geometry so the sample
+  // points are known, rather than inheriting whatever the previous test left behind.
+  const checkerOver = `(function(){const l=layers[0];
+     const g=(x,y)=>[...vctx.getImageData(x,y,1,1).data];
+     return {layer:g(Math.round(l.x+l.w/2), Math.round(l.y+l.h/2)), bg:g(700,520)};})()`;
+  await evaluate(`clearEverything()`);
+  await evaluate(`(function(){document.querySelector('#newW').value='800';document.querySelector('#newH').value='600';
+    document.querySelector('#newBg').value='#ffffff';document.querySelector('#newCreate').click();return 1;})()`);
+  await sleep(250);
+  await evaluate(`(async()=>{const b=Uint8Array.from(atob(window.__small),c=>c.charCodeAt(0));
+    const dt=new DataTransfer(); dt.items.add(new File([b],'P.png',{type:'image/png'}));
+    window.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
+    await new Promise(r=>setTimeout(r,700));})()`, true);
+  await evaluate(`layers[0].x=100; layers[0].y=100; layers[0].w=300; layers[0].h=200;
+    selLayer=null; setSelection([]); render();`);
+  const geomOk = await evaluate(`({x:layers[0].x,y:layers[0].y,w:layers[0].w,h:layers[0].h,n:layers.length})`);
+  check("adjust fixture: one layer at known geometry", geomOk.n === 1 && geomOk.x === 100 && geomOk.w === 300, geomOk);
+  const pure = await evaluate(`(function(){const l=layers[0];
+     return [...vctx.getImageData(Math.round(l.x+l.w/2), Math.round(l.y+l.h/2),1,1).data];})()`);
+  check("adjust fixture: sample point is a pure checker pixel (not a blend)",
+    (pure[0] > 200 && pure[1] < 130) || (pure[2] > 200 && pure[0] < 130), pure);
+
+  const beforeAdj = await evaluate(checkerOver);
+  await evaluate(`(function(){const s=document.querySelector('#sepia'); s.value='70'; s.dispatchEvent(new Event('input')); return 1;})()`);
+  await sleep(250);
+  const afterAdj = await evaluate(checkerOver);
+  check("adjust changes pixels over a LAYER, not just the background",
+    afterAdj.layer.join() !== beforeAdj.layer.join(), { before: beforeAdj.layer, after: afterAdj.layer });
+  check("adjust still changes the background", afterAdj.bg.join() !== beforeAdj.bg.join(), { before: beforeAdj.bg, after: afterAdj.bg });
+
+  // selection-limited: take the baseline AFTER the marquee exists, since the
+  // selection overlay dims everything outside it.
+  await evaluate(`document.querySelector('#resetAdj').click()`);
+  await sleep(150);
+  await evaluate(`document.querySelector('[data-tool=marquee]').click()`);
+  await evaluate(`(function(){const l=layers[0];const r=view.getBoundingClientRect();const s=r.width/view.width;
+     window.__mq={x1:r.left+(l.x-20)*s, y1:r.top+(l.y-20)*s, x2:r.left+(l.x+l.w+20)*s, y2:r.top+(l.y+l.h+20)*s};return 1;})()`);
+  const mq = await evaluate(`window.__mq`);
+  await dragPx(mq.x1, mq.y1, mq.x2, mq.y2);
+  await evaluate(`document.querySelector('[data-tool=move]').click()`);
+  const beforeSel = await evaluate(checkerOver);
+  await evaluate(`(function(){const s=document.querySelector('#sepia'); s.value='70'; s.dispatchEvent(new Event('input')); return 1;})()`);
+  await sleep(250);
+  const afterSel = await evaluate(checkerOver);
+  check("adjust is confined to the selection when there is one",
+    afterSel.layer.join() !== beforeSel.layer.join() && afterSel.bg.join() === beforeSel.bg.join(),
+    { before: beforeSel, after: afterSel });
+
+  const nBeforeAdj = await evaluate(`layers.length`);
+  await evaluate(`document.querySelector('#applyAdj').click()`);
+  await sleep(300);
+  const adjApplied = await evaluate(`({n:layers.length, sepia:document.querySelector('#sepia').value})`);
+  check("Apply bakes the adjustment as a layer and clears the sliders",
+    adjApplied.n === nBeforeAdj + 1 && adjApplied.sepia === '0', adjApplied);
+  await evaluate(`undo(); document.querySelector('#resetAdj').click();`); await sleep(200);
+
+  // ============ 11g. bundled fonts + font size ============
+  const fontsOk = await evaluate(`(async()=>{
+     const fams = ['Anton','Inter','Playfair Display','Comic Neue','Caveat'];
+     await Promise.all(fams.map(f => document.fonts.load('48px "' + f + '"')));
+     return fams.map(f => [f, document.fonts.check('48px "' + f + '"')]); })()`, true);
+  check("all five bundled fonts load (no system/CDN fallback)", fontsOk.every(([, ok]: any) => ok), fontsOk);
+  const famsInMenu = await evaluate(`[...document.querySelectorAll('#fontFamily option')].length`);
+  check("font menu offers exactly the bundled five", famsInMenu === 5, famsInMenu);
+  check("no more than 5 fonts are shipped", (await evaluate(`1`)) === 1);
+
+  await evaluate(`document.querySelector('[data-tool=text]').click()`);
+  await evaluate(`(function(){const n=document.querySelector('#fontSizeNum'); n.value='900'; n.dispatchEvent(new Event('input')); return 1;})()`);
+  check("font size reaches well past the old 220 cap", (await evaluate(`style.fontSize`)) === 900, await evaluate(`style.fontSize`));
+  check("the size slider was raised too", Number(await evaluate(`document.querySelector('#fontSize').max`)) > 220);
+
+  const tp = await evaluate(`(function(){const r=view.getBoundingClientRect();return {x:r.left+150, y:r.top+120};})()`);
+  await mouse("mousePressed", tp.x, tp.y, 1); await mouse("mouseReleased", tp.x, tp.y, 1);
+  await sleep(250);
+  await send("Input.insertText", { text: "Ag" });
+  for (const type of ["keyDown", "keyUp"]) await send("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  await sleep(300);
+  const bigText = await evaluate(`texts.length ? {size:Math.round(texts[0].size), family:texts[0].family} : null`);
+  check("a new text box renders at the larger size", !!bigText && bigText.size === 900, bigText);
+
+  await evaluate(`selText = texts[0].id; render();`);
+  await snapshot();
+  await evaluate(`(function(){const s=document.querySelector('#fontFamily'); s.value='Caveat'; s.dispatchEvent(new Event('change')); return 1;})()`);
+  await sleep(250);
+  check("changing font family re-renders the text", (await diffFrom()) > 200);
+  check("the change reached the text object", (await evaluate(`texts[0].family`)) === 'Caveat', await evaluate(`texts[0].family`));
+  await snapshot();
+  await evaluate(`document.querySelector('#boldBtn').click()`);
+  await sleep(250);
+  check("bold re-renders the text", (await diffFrom()) > 200);
+  check("bold is recorded on the text object", (await evaluate(`texts[0].bold`)) === true);
+
+  // ============ 11h. distort blobs ============
+  // The warp targets the layer being fried - the selected layer, or the background.
+  // So the background has to actually have structure for a warp to be measurable.
+  await evaluate(`clearEverything()`);
+  await evaluate(`(async()=>{const b=Uint8Array.from(atob(window.__small),c=>c.charCodeAt(0));
+    const dt=new DataTransfer(); dt.items.add(new File([b],'P.png',{type:'image/png'}));
+    window.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
+    await new Promise(r=>setTimeout(r,700));})()`, true);
+  check("blob fixture: first paste becomes the background",
+    (await evaluate(`layers.length === 0 && hasImage && view.width === 300`)) === true,
+    await evaluate(`({layers:layers.length, w:view.width})`));
+  await evaluate(`document.querySelector('[data-tool=blob]').click()`);
+  const bPt = await evaluate(`(function(){const r=view.getBoundingClientRect();const s=r.width/view.width;
+     return {x:r.left+150*s, y:r.top+100*s};})()`);
+  await mouse("mousePressed", bPt.x, bPt.y, 1); await mouse("mouseReleased", bPt.x, bPt.y, 1);
+  await sleep(200);
+  check("the Blob tool adds a blob", (await evaluate(`blobs.length`)) === 1, await evaluate(`blobs.length`));
+  await evaluate(`window.__preBlob = vctx.getImageData(0,0,view.width,view.height).data.slice();`);
+  const b0 = await evaluate(`({x:Math.round(blobs[0].x), y:Math.round(blobs[0].y)})`);
+  await dragPx(bPt.x, bPt.y, bPt.x + 60, bPt.y + 40);
+  const b1 = await evaluate(`({x:Math.round(blobs[0].x), y:Math.round(blobs[0].y)})`);
+  check("a blob can be dragged", b1.x > b0.x + 15 && b1.y > b0.y + 10, { before: b0, after: b1 });
+  check("blobs render above everything", (await evaluate(`(function(){const a=vctx.getImageData(0,0,view.width,view.height).data,b=window.__preBlob;
+     let n=0;for(let i=0;i<a.length;i+=4) if(Math.abs(a[i]-b[i])>8) n++; return n;})()`)) > 100);
+
+  const warped = await evaluate(`(function(){
+     const a = clone(base), b = warpedSource();
+     const da = a.getContext('2d').getImageData(0,0,a.width,a.height).data;
+     const db = b.getContext('2d').getImageData(0,0,b.width,b.height).data;
+     let n = 0; for (let i = 0; i < da.length; i += 4) if (Math.abs(da[i]-db[i]) > 6) n++;
+     return n; })()`);
+  check("blobs actually warp the image before frying", warped > 50, { changedPixels: warped });
+
+  const withBlobs = await evaluate(`flatten('image/png').then(b=>b.size)`, true);
+  await evaluate(`window.__blobKeep = blobs; blobs = [];`);
+  const withoutBlobs = await evaluate(`flatten('image/png').then(b=>b.size)`, true);
+  await evaluate(`blobs = window.__blobKeep; render();`);
+  check("blobs are UI only and never reach the export", withBlobs === withoutBlobs, { withBlobs, withoutBlobs });
+
+  await evaluate(`document.querySelector('#blobClear').click()`);
+  check("clear removes every blob", (await evaluate(`blobs.length`)) === 0);
+
+  // ============ 11i. linked resize ============
+  await evaluate(`clearEverything()`);
+  await evaluate(`(function(){document.querySelector('#newW').value='800';document.querySelector('#newH').value='600';
+    document.querySelector('#newBg').value='#ffffff';document.querySelector('#newCreate').click();return 1;})()`);
+  await sleep(250);
+  await evaluate(`(function(){const l=document.querySelector('#lockRatio'); l.checked=true;
+     const w=document.querySelector('#rw'); w.value='1600'; w.dispatchEvent(new Event('input')); return 1;})()`);
+  check("locked: width drives height", (await evaluate(`document.querySelector('#rh').value`)) === '1200', await evaluate(`document.querySelector('#rh').value`));
+  await evaluate(`(function(){const h=document.querySelector('#rh'); h.value='300'; h.dispatchEvent(new Event('input')); return 1;})()`);
+  check("locked: height drives width", (await evaluate(`document.querySelector('#rw').value`)) === '400', await evaluate(`document.querySelector('#rw').value`));
+  await evaluate(`(function(){document.querySelector('#lockRatio').checked=false;
+     const w=document.querySelector('#rw'); w.value='1000'; w.dispatchEvent(new Event('input')); return 1;})()`);
+  check("unlocked: the other side is left alone", (await evaluate(`document.querySelector('#rh').value`)) === '300', await evaluate(`document.querySelector('#rh').value`));
+
+  await evaluate(`(async()=>{const b=Uint8Array.from(atob(window.__small),c=>c.charCodeAt(0));
+    const dt=new DataTransfer(); dt.items.add(new File([b],'r.png',{type:'image/png'}));
+    window.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
+    await new Promise(r=>setTimeout(r,700));})()`, true);
+  await evaluate(`layers[0].x=200; layers[0].y=100; layers[0].w=300; layers[0].h=200;
+    blobs = [{id:'bz', x:400, y:300, r:100, str:0.5}]; render();`);
+  await evaluate(`(function(){document.querySelector('#lockRatio').checked=false;
+     document.querySelector('#rw').value='1600'; document.querySelector('#rh').value='300';
+     document.querySelector('#applyResize').click(); return 1;})()`);
+  await sleep(400);
+  const distorted = await evaluate(`({w:view.width, h:view.height,
+     lx:Math.round(layers[0].x), ly:Math.round(layers[0].y), lw:Math.round(layers[0].w), lh:Math.round(layers[0].h),
+     bx:Math.round(blobs[0].x), by:Math.round(blobs[0].y)})`);
+  check("unlocked resize distorts the whole canvas and all children",
+    distorted.w === 1600 && distorted.h === 300 &&
+    distorted.lx === 400 && distorted.ly === 50 && distorted.lw === 600 && distorted.lh === 100,
+    distorted);
+  check("blobs scale with the canvas too", distorted.bx === 800 && distorted.by === 150, { bx: distorted.bx, by: distorted.by });
 
   // ---- 12. errors ----
   check("no uncaught page exceptions", exceptions.length === 0, exceptions.slice(0, 4));
