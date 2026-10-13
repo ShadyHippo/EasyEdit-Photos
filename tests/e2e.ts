@@ -50,6 +50,10 @@ async function touchDrag(x1: number, y1: number, x2: number, y2: number, steps =
 const rectOf = () => evaluate(`view.getBoundingClientRect().toJSON()`);
 const snapshot = () => evaluate(`(()=>{window.__snap=vctx.getImageData(0,0,view.width,view.height).data.slice();return view.width+'x'+view.height;})()`);
 const diffFrom = (v = "__snap") => evaluate(`(()=>{const a=vctx.getImageData(0,0,view.width,view.height).data;const b=window.${v};let n=0;for(let i=0;i<a.length;i+=4){if(Math.abs(a[i]-b[i])>12||Math.abs(a[i+1]-b[i+1])>12||Math.abs(a[i+2]-b[i+2])>12)n++;}return n;})()`);
+// UI chrome (outlines/handles/crop/marquee/blobs) lives on its own stage-sized canvas, so
+// chrome assertions read that rather than the image canvas.
+const chromeSnap = () => evaluate(`(()=>{window.__csnap=cctx.getImageData(0,0,chromeCanvas.width,chromeCanvas.height).data.slice();return chromeCanvas.width+'x'+chromeCanvas.height;})()`);
+const chromeDiff = (v = "__csnap") => evaluate(`(()=>{const a=cctx.getImageData(0,0,chromeCanvas.width,chromeCanvas.height).data;const b=window.${v};let n=0;for(let i=0;i<a.length;i+=4){if(Math.abs(a[i]-b[i])>12||Math.abs(a[i+1]-b[i+1])>12||Math.abs(a[i+2]-b[i+2])>12)n++;}return n;})()`);
 async function waitToast(re: RegExp, ms = 15000) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) { const t = await evaluate(`document.querySelector('#toast').textContent`); if (re.test(t)) return t; await sleep(200); }
@@ -144,12 +148,12 @@ async function main() {
     await new Promise(r=>setTimeout(r,900));})()`, true);
   check("first paste after Clear becomes the background", (await evaluate(`hasImage && layers.length === 0 && selLayer === null`)) === true, await evaluate(`({has:hasImage,layers:layers.length})`));
   const rs2 = await rectOf();
-  await snapshot();
+  await chromeSnap();
   await evaluate(`document.querySelector('[data-tool=marquee]').click()`);
   await dragPx(rs2.left + rs2.width * 0.2, rs2.top + rs2.height * 0.2, rs2.left + rs2.width * 0.5, rs2.top + rs2.height * 0.5);
   const sel1 = await evaluate(`selection && ({...selection})`);
   check("Select tool creates a marquee selection", !!sel1 && sel1.w > 100 && sel1.h > 100, sel1);
-  const selDrawDiff = await diffFrom();
+  const selDrawDiff = await chromeDiff();
   check("selection overlay is drawn on the canvas", selDrawDiff > 100, { changed: selDrawDiff });
 
   for (const type of ["keyDown", "keyUp"])
@@ -334,7 +338,7 @@ async function main() {
   // leave a single-layer selection for the tests that follow
   await evaluate(`setSelection([layers[1].id]); render();`);
 
-  // shapes go to the annotation overlay, not the background
+  // shapes are live annotations, not background pixels
   await snapshot();
   await evaluate(`document.querySelector('[data-tool=rect]').click()`);
   const baseBefore = await evaluate(`(function(){window.__baseProbe=clone(base);return 1;})()`);
@@ -342,13 +346,15 @@ async function main() {
   const rr = await rectOf();
   await dragPx(rr.left + rr.width * 0.2, rr.top + rr.height * 0.2, rr.left + rr.width * 0.6, rr.top + rr.height * 0.5);
   const ann = await evaluate(`(function(){
-     const d=octx.getImageData(0,0,overlay.width,overlay.height).data; let n=0;
-     for(let i=3;i<d.length;i+=4*37) if(d[i]>0) n++;
      const a=base.getContext('2d').getImageData(0,0,base.width,base.height).data;
      const b=window.__baseProbe.getContext('2d').getImageData(0,0,base.width,base.height).data;
      let diff=0; for(let i=0;i<a.length;i+=4*37){ if(Math.abs(a[i]-b[i])>8) diff++; }
-     return {overlayPixels:n, baseChanged:diff};})()`);
-  check("shapes land on the annotations overlay, not the background", ann.overlayPixels > 50 && ann.baseChanged === 0, ann);
+     const s=shapes[shapes.length-1];
+     const v=vctx.getImageData(0,0,view.width,view.height).data;
+     let painted=0; for(let i=3;i<v.length;i+=4*37) if(v[i]>0) painted++;
+     return {n:shapes.length, type:s&&s.type, selected:selShape===s.id, baseChanged:diff, painted};})()`);
+  check("drawing a shape adds a live annotation, not background pixels",
+    ann.n === 1 && ann.type === 'rect' && ann.selected === true && ann.baseChanged === 0 && ann.painted > 0, ann);
   await evaluate(`undo()`); await sleep(150);
   await evaluate(`document.querySelector('[data-tool=move]').click()`);
   await evaluate(`layerDelete(); selLayer=null; updateLayerUI();`);
@@ -357,7 +363,7 @@ async function main() {
   check("all layers can be removed", (await evaluate(`layers.length`)) === 0);
 
   // ---- 1e. composite effects / flatten / multi-select / copy-paste ----
-  const overlayPx = `(function(){const d=octx.getImageData(0,0,overlay.width,overlay.height).data;let k=0;for(let i=3;i<d.length;i+=4*41)if(d[i]>0)k++;return k;})()`;
+  const annCount = `(shapes.length + texts.length)`;
   const baseHash = `(function(){const d=bctx.getImageData(0,0,base.width,base.height).data;let h=0;for(let i=0;i<d.length;i+=4*97)h=(h*31+d[i])|0;return h;})()`;
 
   await evaluate(`clearEverything()`);
@@ -473,17 +479,18 @@ async function main() {
   const fr = await rectOf();
   await dragPx(fr.left + fr.width * 0.3, fr.top + fr.height * 0.3, fr.left + fr.width * 0.6, fr.top + fr.height * 0.6);
   await evaluate(`document.querySelector('[data-tool=move]').click()`);
-  const beforeF = await evaluate(`({n:layers.length, ov:${overlayPx}, hash:${baseHash}, tick:document.querySelectorAll('#layerList input[type=checkbox]').length})`);
+  const beforeF = await evaluate(`({n:layers.length, ann:${annCount}, hash:${baseHash}, tick:document.querySelectorAll('#layerList input[type=checkbox]').length})`);
   check("there is a tick box per layer row including annotations", beforeF.tick === 2, beforeF.tick);
+  check("the drawn annotation is live before flattening", beforeF.ann === 1, beforeF.ann);
   await evaluate(`checkedLayers = new Set(layers.map(l => l.id)); flattenAnnotations = true; flattenChecked();`);
   await sleep(250);
-  const afterF = await evaluate(`({n:layers.length, ov:${overlayPx}, hash:${baseHash}, texts:texts.length, ticked:checkedLayers.size})`);
+  const afterF = await evaluate(`({n:layers.length, ann:${annCount}, hash:${baseHash}, texts:texts.length, ticked:checkedLayers.size})`);
   check("flatten pushes ticked layers + annotations into the background",
-    afterF.n === 0 && afterF.ov === 0 && afterF.texts === 0, { before: beforeF, after: afterF });
+    afterF.n === 0 && afterF.ann === 0 && afterF.texts === 0, { before: beforeF, after: afterF });
   check("flatten actually changed the background pixels", afterF.hash !== beforeF.hash, { before: beforeF.hash, after: afterF.hash });
   await evaluate(`undo()`); await sleep(200);
-  const undoneF = await evaluate(`({n:layers.length, ov:${overlayPx}})`);
-  check("flatten is undoable", undoneF.n === beforeF.n && undoneF.ov > 0, undoneF);
+  const undoneF = await evaluate(`({n:layers.length, ann:${annCount}})`);
+  check("flatten is undoable (annotations come back as objects)", undoneF.n === beforeF.n && undoneF.ann === 1, undoneF);
   await evaluate(`clearEverything()`);
   // restore a working image for the remaining tests
   await evaluate(`(async()=>{const b=Uint8Array.from(atob(window.__png),c=>c.charCodeAt(0));
@@ -828,9 +835,9 @@ async function main() {
   await evaluate(`setSelection(layers.map(l => l.id)); render();`);
   const viz = await evaluate(`({sel:selLayers.length, active:document.querySelectorAll('#layerList .layerRow.active').length})`);
   check("every selected layer is highlighted in the panel", viz.active === viz.sel && viz.sel === 2, viz);
-  await evaluate(`window.__vizSnap = vctx.getImageData(0,0,view.width,view.height).data.slice();`);
+  await evaluate(`window.__vizSnap = cctx.getImageData(0,0,chromeCanvas.width,chromeCanvas.height).data.slice();`);
   await evaluate(`setSelection([]); render();`);
-  const vizDiff = await evaluate(`(function(){const a=vctx.getImageData(0,0,view.width,view.height).data;const b=window.__vizSnap;
+  const vizDiff = await evaluate(`(function(){const a=cctx.getImageData(0,0,chromeCanvas.width,chromeCanvas.height).data;const b=window.__vizSnap;
      let n=0; for(let i=0;i<a.length;i+=4) if(Math.abs(a[i]-b[i])>8||Math.abs(a[i+1]-b[i+1])>8) n++; return n;})()`);
   check("selected layers are outlined on the canvas", vizDiff > 500, { changed: vizDiff });
 
@@ -849,12 +856,12 @@ async function main() {
     document.querySelector('[data-tool=move]').click(); setSelection([]); hoverId=null; render();`);
   const pickPt = await evaluate(`(function(){const l=layers[1];const r=view.getBoundingClientRect();const s=r.width/view.width;
      return {x:r.left+(l.x+l.w/2)*s, y:r.top+(l.y+l.h/2)*s};})()`);
-  await evaluate(`window.__preHover = vctx.getImageData(0,0,view.width,view.height).data.slice();`);
+  await evaluate(`window.__preHover = cctx.getImageData(0,0,chromeCanvas.width,chromeCanvas.height).data.slice();`);
   await mouse("mouseMoved", pickPt.x, pickPt.y, 0);
   await sleep(200);
   const hov = await evaluate(`({idx: hoverId ? layers.findIndex(l=>l.id===hoverId) : -1})`);
   check("hovering marks the layer under the cursor", hov.idx === 1, hov);
-  const hovDiff = await evaluate(`(function(){const a=vctx.getImageData(0,0,view.width,view.height).data,b=window.__preHover;
+  const hovDiff = await evaluate(`(function(){const a=cctx.getImageData(0,0,chromeCanvas.width,chromeCanvas.height).data,b=window.__preHover;
      let n=0;for(let i=0;i<a.length;i+=4) if(Math.abs(a[i]-b[i])>8||Math.abs(a[i+2]-b[i+2])>8) n++; return n;})()`);
   check("hover draws an outline on the canvas", hovDiff > 100, { changed: hovDiff });
 
@@ -937,121 +944,314 @@ async function main() {
   check("panning leaves the document alone",
     (await evaluate(`layers[0].x`)) === layerX0 && (await evaluate(`layers.length`)) === 2, { layerX: layerX0 });
 
-  // ============ 11e3. tool shortcuts, default ticks, select-on-press ============
+  // ============ 11e4. annotations are live, editable objects ============
+  await evaluate(`clearEverything()`);
+  await evaluate(`(async()=>{const b=Uint8Array.from(atob(window.__png),c=>c.charCodeAt(0));
+    const dt=new DataTransfer(); dt.items.add(new File([b],'a.png',{type:'image/png'}));
+    window.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
+    await new Promise(r=>setTimeout(r,900));})()`, true);
+  await evaluate(`document.querySelector('[data-tool=rect]').click(); selLayer=null; setSelection([]);`);
+  const ans = await rectOf();
+  await dragPx(ans.left + ans.width * 0.2, ans.top + ans.height * 0.2, ans.left + ans.width * 0.45, ans.top + ans.height * 0.45);
+  await evaluate(`document.querySelector('[data-tool=move]').click()`);
+  const an0 = await evaluate(`(function(){const s=shapes[0];return {n:shapes.length, type:s&&s.type, sel:selShape===s.id, box:s&&shapeBox(s)};})()`);
+  check("a drawn rect becomes a live, selected annotation",
+    an0.n === 1 && an0.type === 'rect' && an0.sel === true && an0.box.w > 200, an0);
+
+  // screen point at a fraction of the annotation's bbox
+  const anPt = (fx: number, fy: number) => evaluate(`(function(){const b=shapeBox(shapes[0]);const r=view.getBoundingClientRect();const sc=r.width/view.width;
+     return {x:r.left+(b.x+b.w*${fx})*sc, y:r.top+(b.y+b.h*${fy})*sc};})()`);
+
+  const mv = await anPt(0.5, 0.5);
+  const mb0 = await evaluate(`shapeBox(shapes[0])`);
+  await dragPx(mv.x, mv.y, mv.x + 70, mv.y + 50);
+  const mb1 = await evaluate(`shapeBox(shapes[0])`);
+  check("an annotation can be dragged around",
+    mb1.x > mb0.x + 20 && mb1.y > mb0.y + 10 && Math.abs(mb1.w - mb0.w) < 3, { before: mb0, after: mb1 });
+  await evaluate(`undo()`); await sleep(200);
+  const mb2 = await evaluate(`shapeBox(shapes[0])`);
+  check("moving an annotation is undoable", Math.abs(mb2.x - mb0.x) < 3 && Math.abs(mb2.y - mb0.y) < 3, { before: mb0, after: mb2 });
+
+  const seh = await anPt(1, 1);
+  const rs0 = await evaluate(`shapeBox(shapes[0])`);
+  await dragPx(seh.x, seh.y, seh.x + 90, seh.y + 70);
+  const rs1 = await evaluate(`shapeBox(shapes[0])`);
+  check("dragging the SE handle resizes the annotation",
+    rs1.w > rs0.w + 20 && rs1.h > rs0.h + 15, { before: rs0, after: rs1 });
+
+  await evaluate(`selectShape(shapes[0]); render();
+    const c=document.querySelector('#color'); c.value='#00aaff'; c.dispatchEvent(new Event('input'));`);
+  check("the colour picker edits the selected annotation live", (await evaluate(`shapes[0].color`)) === '#00aaff');
+  await evaluate(`(function(){const w=document.querySelector('#width'); w.value='24'; w.dispatchEvent(new Event('input')); return 1;})()`);
+  check("the width slider edits the selected annotation live", Math.round(await evaluate(`shapes[0].width`)) === 24);
+  await evaluate(`(function(){const c=document.querySelector('#color'); c.value='#ff3b30'; c.dispatchEvent(new Event('input')); return 1;})()`);
+
+  await evaluate(`selectShape(shapes[0]); render();`);
+  const anN0 = await evaluate(`Math.round(shapeBox(shapes[0]).x)`);
+  await pressKey("ArrowRight", "ArrowRight", 39, 0); await sleep(90);
+  check("arrows nudge the selected annotation", Math.round(await evaluate(`shapeBox(shapes[0]).x`)) === anN0 + 1, { before: anN0 });
+  await evaluate(`selectShape(shapes[0]); duplicateSelected();`);
+  check("Duplicate adds a second annotation", (await evaluate(`shapes.length`)) === 2);
+  await evaluate(`deleteSelected()`);
+  check("Delete removes the selected annotation", (await evaluate(`shapes.length`)) === 1);
+
+  // a second, different annotation so the ordering panel has something to restack
+  await evaluate(`document.querySelector('[data-tool=line]').click();`);
+  const lns = await rectOf();
+  await dragPx(lns.left + lns.width * 0.3, lns.top + lns.height * 0.6, lns.left + lns.width * 0.7, lns.top + lns.height * 0.75);
+  await evaluate(`document.querySelector('[data-tool=move]').click()`);
+  const anHidden = await evaluate(`({n:shapes.length, hidden:document.querySelector('#annBody').hidden})`);
+  check("two annotations, and the Annotations panel is hidden by default",
+    anHidden.n === 2 && anHidden.hidden === true, anHidden);
+  await evaluate(`document.querySelector('#annToggle').click()`);
+  const anPanel = await evaluate(`({open:document.querySelector('#annBody').hidden === false, rows:document.querySelectorAll('#annList .annRow').length})`);
+  check("the Annotations panel lists every annotation", anPanel.open === true && anPanel.rows === 2, anPanel);
+  const anOrder0 = await evaluate(`shapes.map(s => s.type)`);
+  const anRects = await evaluate(`[...document.querySelectorAll('#annList .annRow')].map(el => el.getBoundingClientRect().toJSON())`);
+  const anFrom = { x: anRects[0].left + anRects[0].width / 2, y: anRects[0].top + anRects[0].height / 2 };
+  const anTo = { x: anRects[1].left + anRects[1].width / 2, y: anFrom.y };
+  await send("Input.dispatchMouseEvent", { type:"mousePressed", x:anFrom.x, y:anFrom.y, button:"left", buttons:1, clickCount:1 });
+  await send("Input.dispatchMouseEvent", { type:"mouseMoved", x:anTo.x, y:anTo.y, button:"left", buttons:1 });
+  await send("Input.dispatchMouseEvent", { type:"mouseReleased", x:anTo.x, y:anTo.y, button:"left", buttons:1, clickCount:1 });
+  await sleep(160);
+  const anOrder1 = await evaluate(`shapes.map(s => s.type)`);
+  check("dragging a row restacks the annotation order",
+    anOrder1.join() === anOrder0.slice().reverse().join(), { before: anOrder0, after: anOrder1 });
+
+  // -------- multi-select + the Delete button (annotations work like layers) --------
+  await evaluate(`clearShapeSel();
+    shapes = [];
+    shapes.push({id:'s1',rev:0,type:'rect',color:'#ff0000',width:2,opacity:1,filled:false,x1:100,y1:100,x2:200,y2:200});
+    shapes.push({id:'s2',rev:0,type:'rect',color:'#00ff00',width:2,opacity:1,filled:false,x1:400,y1:100,x2:500,y2:200});
+    shapes.push({id:'s3',rev:0,type:'rect',color:'#0000ff',width:2,opacity:1,filled:false,x1:700,y1:100,x2:800,y2:200});
+    updateLayerUI(); render();`);
+  check("the annotations Delete button is disabled with nothing selected",
+    (await evaluate(`document.querySelector('#annDel').disabled`)) === true);
+  const anImgPt = (x: number, y: number) => evaluate(`(function(){const r=view.getBoundingClientRect();const sc=r.width/view.width;
+     return {x:r.left+${x}*sc, y:r.top+${y}*sc};})()`);
+  const anClick = async (pt: any, mods = 0) => {
+    for (const type of ["mousePressed", "mouseReleased"])
+      await send("Input.dispatchMouseEvent", { type, x:pt.x, y:pt.y, button:"left", buttons:1, clickCount:1, modifiers:mods });
+    await sleep(120);
+  };
+  await anClick(await anImgPt(150, 150), 0);
+  check("clicking an annotation selects just it", (await evaluate(`selShapes.length`)) === 1, await evaluate(`selShapes.length`));
+  await anClick(await anImgPt(450, 150), 2);
+  check("ctrl-click on the canvas adds to the annotation selection",
+    (await evaluate(`selShapes.length`)) === 2, await evaluate(`selShapes.length`));
+  await anClick(await anImgPt(150, 150), 2);
+  check("ctrl-click with no drag toggles that annotation back off",
+    (await evaluate(`selShapes.length`)) === 1, await evaluate(`selShapes.length`));
+  await anClick(await anImgPt(150, 150), 0);
+  await anClick(await anImgPt(750, 150), 8);
+  check("shift-click on the canvas picks a range of annotations",
+    (await evaluate(`selShapes.length`)) === 3, await evaluate(`selShapes.length`));
+  check("the Delete button enables once annotations are selected",
+    (await evaluate(`document.querySelector('#annDel').disabled`)) === false);
+
+  const anG0 = await evaluate(`({x1:shapeBox(shapes[0]).x, x3:shapeBox(shapes[2]).x})`);
+  const anGpt = await anImgPt(150, 150);
+  await dragPx(anGpt.x, anGpt.y, anGpt.x + 60, anGpt.y + 40);
+  const anG1 = await evaluate(`({x1:shapeBox(shapes[0]).x, x3:shapeBox(shapes[2]).x})`);
+  check("dragging one of several selected annotations moves them all",
+    anG1.x1 > anG0.x1 + 15 && anG1.x3 > anG0.x3 + 15, { before: anG0, after: anG1 });
+
+  // the same modifiers work in the chip strip
+  await evaluate(`selectShape(shapes[0]); updateLayerUI(); render();`);
+  const anChip = async (i: number, mods: number) => {
+    const b = await evaluate(`document.querySelectorAll('#annList .annRow')[${i}].getBoundingClientRect().toJSON()`);
+    for (const type of ["mousePressed", "mouseReleased"])
+      await send("Input.dispatchMouseEvent", { type, x:b.left + b.width / 2, y:b.top + b.height / 2, button:"left", buttons:1, clickCount:1, modifiers:mods });
+    await sleep(130);
+  };
+  await anChip(0, 0);
+  check("clicking a chip selects just that annotation", (await evaluate(`selShapes.length`)) === 1, await evaluate(`selShapes.length`));
+  await anChip(1, 2);
+  check("ctrl-click in the strip adds to the selection", (await evaluate(`selShapes.length`)) === 2, await evaluate(`selShapes.length`));
+  await anChip(1, 2);
+  check("ctrl-click in the strip toggles it back off", (await evaluate(`selShapes.length`)) === 1, await evaluate(`selShapes.length`));
+  await anChip(2, 8);
+  check("shift-click in the strip picks a range", (await evaluate(`selShapes.length`)) === 3, await evaluate(`selShapes.length`));
+
+  await evaluate(`document.querySelector('#annDel').click()`); await sleep(150);
+  check("the annotations Delete button removes every selected annotation",
+    (await evaluate(`shapes.length`)) === 0, await evaluate(`shapes.length`));
+  check("Delete button goes back to disabled after deleting",
+    (await evaluate(`document.querySelector('#annDel').disabled`)) === true);
+  // -------- centre grab grip: larger, round, on every selected annotation --------
+  await evaluate(`clearShapeSel(); shapes = [];
+    shapes.push({id:'c1',rev:0,type:'line',color:'#ff0000',width:2,opacity:1,filled:false,x1:100,y1:400,x2:900,y2:400});
+    shapes.push({id:'c2',rev:0,type:'brush',color:'#00ff00',width:10,opacity:1,filled:false,
+                 points:[{x:200,y:600},{x:400,y:700},{x:600,y:600},{x:800,y:700}]});
+    selectShape(shapes[0]); updateLayerUI(); render();`);
+  const gripSize = await evaluate(`(function(){
+     const z=zoom, d=chromeDpr, b=shapeBox(shapes[0]);
+     const X=Math.round(((b.x+b.w/2)*z+pan.x)*d), Y=Math.round(((b.y+b.h/2)*z+pan.y)*d);
+     const R=Math.ceil(20*d);
+     const img=cctx.getImageData(X-R, Y-R, R*2, R*2).data;
+     let white=0; for(let i=0;i<img.length;i+=4) if(img[i]>230&&img[i+1]>230&&img[i+2]>230) white++;
+     return {white, unit:Math.round(16*d)*Math.round(16*d)};})()`);
+  check("the centre grip is a bigger grab target than a corner handle",
+    gripSize.white > gripSize.unit * 1.3, gripSize);
+
+  const gripPt = (i: number) => evaluate(`(function(){const b=shapeBox(shapes[${i}]);const r=view.getBoundingClientRect();const sc=r.width/view.width;
+     return {x:r.left+(b.x+b.w/2)*sc, y:r.top+(b.y+b.h/2)*sc};})()`);
+
+  const gl0 = await evaluate(`shapeBox(shapes[0])`);
+  const gp = await gripPt(0);
+  await dragPx(gp.x, gp.y - 10, gp.x + 40, gp.y - 10);      // start 10px off the thin line body
+  const gl1 = await evaluate(`shapeBox(shapes[0])`);
+  check("the centre grip lets a thin line be grabbed just off its body",
+    gl1.x > gl0.x + 8 && Math.abs(gl1.y - gl0.y) < 3, { before: gl0, after: gl1 });
+
+  await evaluate(`selectShape(shapes[1]); render();`);
+  const gb0 = await evaluate(`shapeBox(shapes[1])`);
+  const gbp = await gripPt(1);
+  await dragPx(gbp.x, gbp.y, gbp.x + 30, gbp.y + 25);
+  const gb1 = await evaluate(`shapeBox(shapes[1])`);
+  check("a brush stroke can be dragged by its centre grip",
+    gb1.x > gb0.x + 8 && gb1.y > gb0.y + 8, { before: gb0, after: gb1 });
+
+  // annotations survive whole-canvas rotate / flip / resize / crop
+  await evaluate(`clearShapeSel(); shapes = [];
+    shapes.push({ id:'t1', rev:0, type:'rect', color:'#ff0000', width:2, opacity:1, filled:false, x1:100, y1:200, x2:300, y2:400 });
+    updateLayerUI(); render();`);
+  const tb0 = await evaluate(`({W:view.width, H:view.height, box:shapeBox(shapes[0])})`);
+  await evaluate(`document.querySelector('#rotR').click()`); await sleep(200);
+  const tb1 = await evaluate(`({W:view.width, H:view.height, box:shapeBox(shapes[0])})`);
+  check("rotating the canvas remaps annotations",
+    Math.abs(tb1.box.x - (tb0.H - 400)) < 2 && Math.abs(tb1.box.y - 100) < 2 &&
+    Math.abs(tb1.box.w - 200) < 2 && Math.abs(tb1.box.h - 200) < 2, { before: tb0, after: tb1 });
+  await evaluate(`document.querySelector('#flipH').click()`); await sleep(200);
+  const tb2 = await evaluate(`({W:view.width, box:shapeBox(shapes[0])})`);
+  check("flipping the canvas mirrors annotations",
+    Math.abs(tb2.box.x - (tb1.W - (tb1.box.x + tb1.box.w))) < 2, { before: tb1, after: tb2 });
+  await evaluate(`resizeAll(600, 800)`); await sleep(200);
+  const tb3 = await evaluate(`({W:view.width, box:shapeBox(shapes[0])})`);
+  check("resizing the canvas scales annotations",
+    Math.abs(tb3.box.w / tb2.box.w - tb3.W / tb2.W) < 0.03, { before: tb2, after: tb3 });
+  await evaluate(`crop = {x:100, y:100, w:400, h:400}; applyCrop();`); await sleep(200);
+  const tb4 = await evaluate(`({W:view.width, H:view.height, n:shapes.length, x:shapes[0]?shapeBox(shapes[0]).x:null})`);
+  check("cropping offsets annotations",
+    tb4.W === 400 && tb4.H === 400 && tb4.n === 1 && Math.abs(tb4.x) < 2, tb4);
+
+  await evaluate(`document.querySelector('#annToggle').click(); clearShapeSel(); shapes = []; updateLayerUI(); render();`);
+
+  // -------- the Move tool shows a centre grip on EVERY object --------
+  await evaluate(`clearEverything()`);
+  await evaluate(`(async()=>{const b=Uint8Array.from(atob(window.__png),c=>c.charCodeAt(0));
+    const dt=new DataTransfer(); dt.items.add(new File([b],'g.png',{type:'image/png'}));
+    window.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
+    await new Promise(r=>setTimeout(r,900));})()`, true);
+  await evaluate(`document.querySelector('[data-tool=move]').click();
+    clearShapeSel(); selText = null; selLayers = []; selLayer = null;
+    layers = [{ id:'L1', c:(function(){const c=canvas(200,150);const x=c.getContext('2d');x.fillStyle='#101010';x.fillRect(0,0,200,150);return c;})(), x:150, y:150, w:200, h:150 }];
+    shapes = [{ id:'S1', rev:0, type:'rect', color:'#ff0000', width:3, opacity:1, filled:false, x1:600, y1:300, x2:800, y2:460 }];
+    texts = [{ id:'T1', x:950, y:700, text:'Hi', color:'#000000', size:80, family:'Anton', bold:false, italic:false, opacity:1 }];
+    updateLayerUI(); render();`);
+  const gripWhite = `(function(){const z=zoom, d=chromeDpr;
+     const w=(ix,iy)=>{const X=Math.round((ix*z+pan.x)*d), Y=Math.round((iy*z+pan.y)*d);
+       const img=cctx.getImageData(X-2,Y-2,5,5).data; let n=0;
+       for(let i=0;i<img.length;i+=4) if(img[i]>235&&img[i+1]>235&&img[i+2]>235) n++; return n;};
+     const L=layers[0], S=shapes[0], T=texts[0], tb=textBBox(T);
+     return { layer:w(L.x+L.w/2,L.y+L.h/2), shape:w((S.x1+S.x2)/2,(S.y1+S.y2)/2), text:w(T.x+tb.w/2,T.y+tb.h/2) };})()`;
+  const mvGrips = await evaluate(gripWhite);
+  check("the Move tool shows a centre grip on every layer, annotation and text",
+    mvGrips.layer > 0 && mvGrips.shape > 0 && mvGrips.text > 0, mvGrips);
+  await evaluate(`document.querySelector('[data-tool=rect]').click(); render();`);
+  const noGrips = await evaluate(gripWhite);
+  check("grips are hidden again when another tool is active",
+    noGrips.layer === 0 && noGrips.shape === 0 && noGrips.text === 0, noGrips);
+  await evaluate(`document.querySelector('[data-tool=move]').click(); render();`);
+
+  await evaluate(`shapes = [{id:'S2',rev:0,type:'line',color:'#ff0000',width:2,opacity:1,filled:false,x1:200,y1:900,x2:1200,y2:900}];
+    clearShapeSel(); render();`);
+  const lgr0 = await evaluate(`shapeBox(shapes[0]).x`);
+  const lgr = await evaluate(`(function(){const r=view.getBoundingClientRect();const sc=r.width/view.width;
+     return {x:r.left+700*sc, y:r.top+900*sc};})()`);
+  await dragPx(lgr.x, lgr.y - 10, lgr.x + 45, lgr.y - 10);
+  const lgr1 = await evaluate(`({x:shapeBox(shapes[0]).x, n:selShapes.length})`);
+  check("an unselected shape's centre grip is grabbable off its body",
+    lgr1.x > lgr0 + 8 && lgr1.n === 1, { before: lgr0, after: lgr1 });
+
+  // -------- an object dragged off the image edge keeps its chrome and stays grabbable --------
+  await evaluate(`setZoom(0.5);
+    shapes = [{id:'S3',rev:0,type:'rect',color:'#ff0000',width:3,opacity:1,filled:false,x1:1500,y1:300,x2:1850,y2:500}];
+    selText=null; selLayers=[]; selLayer=null; clearShapeSel(); render();`);
+  const off0 = await evaluate(`({box:shapeBox(shapes[0]), inside: shapeBox(shapes[0]).x < view.width})`);
+  check("the fixture object really does stick out past the image", off0.box.x + off0.box.w > 1600, off0);
+  const offGrip = await evaluate(`(function(){const z=zoom, d=chromeDpr;
+     const X=Math.round((1675*z+pan.x)*d), Y=Math.round((400*z+pan.y)*d);
+     const img=cctx.getImageData(X-3,Y-3,7,7).data; let n=0;
+     for(let i=0;i<img.length;i+=4) if(img[i]>235&&img[i+1]>235&&img[i+2]>235) n++; return n;})()`);
+  check("an off-image object still draws its centre grip on the chrome layer", offGrip > 0, offGrip);
+  const og = await evaluate(`(function(){const r=view.getBoundingClientRect();const sc=r.width/view.width;
+     return {x:r.left+1675*sc, y:r.top+400*sc};})()`);
+  const ogSafe = await evaluate(`stage.getBoundingClientRect().right > ${og.x} + 5`);
+  check("(precondition) the off-image grip is still inside the stage", ogSafe === true, { x: og.x });
+  await dragPx(og.x, og.y, og.x + 40, og.y + 30);
+  const og1 = await evaluate(`({x:shapeBox(shapes[0]).x, n:selShapes.length})`);
+  check("an off-image object can still be grabbed and moved",
+    og1.x > off0.box.x + 8 && og1.n === 1, { before: off0.box.x, after: og1 });
+
+  // -------- handle picking is z-ordered: grips beat everything, then the primary's handles --------
   await evaluate(`clearEverything()`);
   await evaluate(`(function(){document.querySelector('#newW').value='800';document.querySelector('#newH').value='600';
     document.querySelector('#newBg').value='#ffffff';document.querySelector('#newCreate').click();return 1;})()`);
   await sleep(250);
-  for (let k = 0; k < 2; k++) {
-    await evaluate(`(async()=>{const b=Uint8Array.from(atob(window.__small),c=>c.charCodeAt(0));
-      const dt=new DataTransfer(); dt.items.add(new File([b],'p'+Math.random()+'.png',{type:'image/png'}));
-      window.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
-      await new Promise(r=>setTimeout(r,600));})()`, true);
-  }
-  const skTicks = await evaluate(`({n:layers.length, ticked:checkedLayers.size, ann:flattenAnnotations,
-     annBox:document.querySelectorAll('#layerList input[type=checkbox]')[0].checked})`);
-  check("every layer and the annotations row are ticked by default",
-    skTicks.n === 2 && skTicks.ticked === 2 && skTicks.ann === true && skTicks.annBox === true, skTicks);
+  await evaluate(`(function(){
+     const mk=(col)=>{const c=canvas(200,150);const x=c.getContext('2d');x.fillStyle=col;x.fillRect(0,0,200,150);return c;};
+     layers=[ {id:'A',c:mk('#111111'),x:80,y:80,w:200,h:150},
+              {id:'B',c:mk('#222222'),x:300,y:80,w:200,h:150},
+              {id:'C',c:mk('#333333'),x:200,y:120,w:400,h:300} ];
+     document.querySelector('[data-tool=move]').click(); selLayer=null; selLayers=[]; clearShapeSel(); selText=null;
+     setSelection([]); fitView(); render(); })()`);
+  const hpt = (ix: number, iy: number) => evaluate(`(function(){const r=view.getBoundingClientRect();const s=r.width/view.width;
+     return {x:r.left+${ix}*s, y:r.top+${iy}*s};})()`);
+  const hclick = async (pt: any) => { await mouse("mousePressed", pt.x, pt.y, 1); await mouse("mouseReleased", pt.x, pt.y, 1); await sleep(140); };
 
-  // single-letter tool shortcuts
-  const skKeymap: [string, string][] = [["m","move"],["s","marquee"],["t","text"],["p","brush"],["h","highlight"],["l","line"],
-    ["a","arrow"],["r","rect"],["e","ellipse"],["w","wand"],["c","crop"],["b","blob"]];
-  const skBad: any[] = [];
-  for (const [k, id] of skKeymap) {
-    await evaluate(`document.activeElement && document.activeElement.blur();`);
-    const vk = k.toUpperCase().charCodeAt(0);
-    for (const type of ["keyDown", "keyUp"])
-      await send("Input.dispatchKeyEvent", { type, key: k, code: "Key" + k.toUpperCase(), windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
-    await sleep(30);
-    const got = await evaluate(`tool`);
-    if (got !== id) skBad.push({ key: k, want: id, got });
-  }
-  check("single-letter shortcuts switch tools", skBad.length === 0, skBad);
+  await hclick(await hpt(400, 155));      // layer B's centre grip, buried under layer C's body
+  check("a buried layer's centre grip is clickable straight through the layer above it",
+    (await evaluate(`selLayer`)) === 'B', await evaluate(`selLayer`));
+  await hclick(await hpt(560, 390));      // plain content inside C only
+  check("clicking plain content still picks the front-most layer there",
+    (await evaluate(`selLayer`)) === 'C', await evaluate(`selLayer`));
 
-  // modifier keys must still win (Ctrl+A = select all, not the Arrow tool)
-  for (const type of ["keyDown", "keyUp"])
-    await send("Input.dispatchKeyEvent", { type, key: "a", code: "KeyA", modifiers: 2, windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 });
-  await sleep(60);
-  const skCtrlA = await evaluate(`({tool, sel: !!selection})`);
-  check("Ctrl+A still selects all instead of switching to the Arrow tool", skCtrlA.tool !== 'arrow' && skCtrlA.sel === true, skCtrlA);
-  await evaluate(`clearSelection(); document.querySelector('[data-tool=move]').click();`);
+  // a grip overrides the selected annotation's own resize handle
+  await evaluate(`(function(){
+     layers=[]; selLayer=null; selLayers=[];
+     shapes=[ {id:'S',rev:0,type:'rect',color:'#ff0000',width:3,opacity:1,filled:false,x1:300,y1:300,x2:600,y2:500},
+              {id:'T',rev:0,type:'rect',color:'#00ff00',width:3,opacity:1,filled:false,x1:550,y1:375,x2:650,y2:425} ];
+     selectShape(shapes[0]); render(); })()`);
+  const zS0 = await evaluate(`shapeBox(shapes[0])`);
+  const zT0 = await evaluate(`shapeBox(shapes[1])`);
+  { const gp = await hpt(600, 400);      // S's 'e' handle and T's centre grip coincide here
+    await dragPx(gp.x, gp.y, gp.x + 40, gp.y + 25); }
+  const zAfter = await evaluate(`({s:shapeBox(shapes[0]), t:shapeBox(shapes[1]), sel:selShape})`);
+  check("a centre grip wins over the selected annotation's resize handle",
+    Math.abs(zAfter.s.x - zS0.x) < 3 && Math.abs(zAfter.s.w - zS0.w) < 3 &&
+    zAfter.t.x > zT0.x + 8 && zAfter.sel === 'T', { beforeS: zS0, beforeT: zT0, after: zAfter });
 
-  // a tool key typed into a text field must stay text
-  await evaluate(`(function(){const el=document.querySelector('#fname'); el.focus(); el.value=''; return 1;})()`);
-  for (const type of ["keyDown", "keyUp"])
-    await send("Input.dispatchKeyEvent", { type, key: "r", code: "KeyR", text: type === "keyDown" ? "r" : undefined,
-      unmodifiedText: "r", windowsVirtualKeyCode: 82, nativeVirtualKeyCode: 82 });
-  await sleep(60);
-  const skField = await evaluate(`({tool, val:document.querySelector('#fname').value})`);
-  check("a tool key typed into a text field is not treated as a shortcut",
-    skField.tool === 'move' && /r/.test(skField.val), skField);
-  await evaluate(`document.activeElement && document.activeElement.blur();`);
-
-  // select-on-press / deselect-on-release
-  await evaluate(`layers[0].x=80; layers[0].y=80; layers[0].w=200; layers[0].h=150;
-    layers[1].x=440; layers[1].y=340; layers[1].w=200; layers[1].h=150;
-    selText=null; selLayer=null; setSelection([]); hoverId=null; fitView(); render();`);
-  await sleep(120);
-  const skPoint = (i: number, fx: number, fy: number) => evaluate(`(function(){const l=layers[${i}];const r=view.getBoundingClientRect();const s=r.width/view.width;
-     return {x:r.left+(l.x+l.w*${fx})*s, y:r.top+(l.y+l.h*${fy})*s};})()`);
-  const skCtrlDrag = async (from: any, dx: number, dy: number) => {
-    await send("Input.dispatchMouseEvent", { type:"mousePressed", x:from.x, y:from.y, button:"left", buttons:1, clickCount:1, modifiers:2 });
-    if (dx || dy) await send("Input.dispatchMouseEvent", { type:"mouseMoved", x:from.x+dx, y:from.y+dy, button:"left", buttons:1, modifiers:2 });
-    await send("Input.dispatchMouseEvent", { type:"mouseReleased", x:from.x+dx, y:from.y+dy, button:"left", buttons:1, clickCount:1, modifiers:2 });
-    await sleep(150);
-  };
-
-  // nothing selected, ctrl press + drag (body, away from the centre block) -> selects and drags
-  const skA0 = await evaluate(`({x:Math.round(layers[0].x), y:Math.round(layers[0].y)})`);
-  await skCtrlDrag(await skPoint(0, 0.3, 0.3), 50, 40);
-  const skA1 = await evaluate(`({x:Math.round(layers[0].x), y:Math.round(layers[0].y), n:selLayers.length, sel:selLayers.includes(layers[0].id)})`);
-  check("ctrl-drag from nothing selects the layer and drags it",
-    skA1.n === 1 && skA1.sel === true && skA1.x > skA0.x + 20 && skA1.y > skA0.y + 15, { before: skA0, after: skA1 });
-
-  // two selected, ctrl press + drag on a body -> group kept, both move
-  await evaluate(`setSelection(layers.map(l => l.id)); render();`);
-  const skB0 = await evaluate(`({x0:Math.round(layers[0].x), x1:Math.round(layers[1].x)})`);
-  await skCtrlDrag(await skPoint(0, 0.3, 0.3), 30, 0);
-  const skB1 = await evaluate(`({x0:Math.round(layers[0].x), x1:Math.round(layers[1].x), n:selLayers.length})`);
-  check("ctrl-drag on an already-selected layer keeps the group and drags it",
-    skB1.n === 2 && skB1.x0 > skB0.x0 + 10 && skB1.x1 > skB0.x1 + 10, { before: skB0, after: skB1 });
-
-  // same, but grabbing the centre block (the handle path) must behave identically
-  await evaluate(`setSelection(layers.map(l => l.id)); render();`);
-  const skC0 = await evaluate(`({x1:Math.round(layers[1].x)})`);
-  await skCtrlDrag(await skPoint(1, 0.5, 0.5), 24, 0);
-  const skC1 = await evaluate(`({x1:Math.round(layers[1].x), n:selLayers.length})`);
-  check("ctrl-drag on the centre grab block also keeps the group", skC1.n === 2 && skC1.x1 > skC0.x1 + 8, { before: skC0, after: skC1 });
-
-  // two selected, ctrl click with no drag -> toggles that one back off
-  await evaluate(`setSelection(layers.map(l => l.id)); render();`);
-  await skCtrlDrag(await skPoint(1, 0.3, 0.3), 0, 0);
-  const skD1 = await evaluate(`({n:selLayers.length, has0:selLayers.includes(layers[0].id), has1:selLayers.includes(layers[1].id)})`);
-  check("ctrl-click with no drag toggles the layer back off",
-    skD1.n === 1 && skD1.has0 === true && skD1.has1 === false, skD1);
-
-  // ...and the centre block behaves the same for the toggle
-  await evaluate(`setSelection(layers.map(l => l.id)); render();`);
-  await skCtrlDrag(await skPoint(0, 0.5, 0.5), 0, 0);
-  const skE1 = await evaluate(`({n:selLayers.length, has0:selLayers.includes(layers[0].id), has1:selLayers.includes(layers[1].id)})`);
-  check("ctrl-click with no drag on the centre block toggles off too",
-    skE1.n === 1 && skE1.has0 === false && skE1.has1 === true, skE1);
-
-  // a click that never moves must not create an undo step
-  await evaluate(`setSelection([layers[0].id]); render();`);
-  const skU0 = await evaluate(`undoStack.length`);
-  const skPtD = await skPoint(0, 0.3, 0.3);
-  await mouse("mousePressed", skPtD.x, skPtD.y, 1); await mouse("mouseReleased", skPtD.x, skPtD.y, 1);
-  await sleep(120);
-  const skU1 = await evaluate(`undoStack.length`);
-  check("a click that does not drag adds no undo step", skU1 === skU0, { before: skU0, after: skU1 });
+  // the primary's own resize handle still beats other objects' bodies
+  await evaluate(`(function(){
+     const c=canvas(200,150); const x=c.getContext('2d'); x.fillStyle='#334455'; x.fillRect(0,0,200,150);
+     layers=[ { id:'L', c, x:500, y:380, w:160, h:120 } ];      // covers S's 'e' handle
+     selectShape(shapes[0]); render(); })()`);
+  const zW0 = await evaluate(`shapeBox(shapes[0]).w`);
+  { const hp = await hpt(600, 400); await dragPx(hp.x, hp.y, hp.x + 60, hp.y); }
+  const zW1 = await evaluate(`({w:shapeBox(shapes[0]).w, sel:selShape})`);
+  check("the selected annotation's resize handle wins over a layer body",
+    zW1.w > zW0 + 15 && zW1.sel === 'S', { before: zW0, after: zW1 });
 
   // ============ 11f. adjust acts on the final image / the selection ============
   // Self-contained: builds its own fixture with explicit geometry so the sample
   // points are known, rather than inheriting whatever the previous test left behind.
+  // read the composited image (composite()), not vctx, so UI chrome (grips/outlines) can't skew
+  // the sample - these tests are about pixels, not overlays.
+  // sample away from the object centre, where the Move tool draws its centre grip
   const checkerOver = `(function(){const l=layers[0];
      const g=(x,y)=>[...vctx.getImageData(x,y,1,1).data];
-     return {layer:g(Math.round(l.x+l.w/2), Math.round(l.y+l.h/2)), bg:g(700,520)};})()`;
+     return {layer:g(Math.round(l.x+l.w*0.3), Math.round(l.y+l.h*0.8)), bg:g(700,520)};})()`;
   await evaluate(`clearEverything()`);
   await evaluate(`(function(){document.querySelector('#newW').value='800';document.querySelector('#newH').value='600';
     document.querySelector('#newBg').value='#ffffff';document.querySelector('#newCreate').click();return 1;})()`);
@@ -1064,8 +1264,8 @@ async function main() {
     selLayer=null; setSelection([]); render();`);
   const geomOk = await evaluate(`({x:layers[0].x,y:layers[0].y,w:layers[0].w,h:layers[0].h,n:layers.length})`);
   check("adjust fixture: one layer at known geometry", geomOk.n === 1 && geomOk.x === 100 && geomOk.w === 300, geomOk);
-  const pure = await evaluate(`(function(){const l=layers[0];
-     return [...vctx.getImageData(Math.round(l.x+l.w/2), Math.round(l.y+l.h/2),1,1).data];})()`);
+  const pure = await evaluate(`(function(){const l=layers[0];const c=composite();
+     return [...c.getContext('2d').getImageData(Math.round(l.x+l.w/2), Math.round(l.y+l.h/2),1,1).data];})()`);
   check("adjust fixture: sample point is a pure checker pixel (not a blend)",
     (pure[0] > 200 && pure[1] < 130) || (pure[2] > 200 && pure[0] < 130), pure);
 
@@ -1156,12 +1356,12 @@ async function main() {
   await mouse("mousePressed", bPt.x, bPt.y, 1); await mouse("mouseReleased", bPt.x, bPt.y, 1);
   await sleep(200);
   check("the Blob tool adds a blob", (await evaluate(`blobs.length`)) === 1, await evaluate(`blobs.length`));
-  await evaluate(`window.__preBlob = vctx.getImageData(0,0,view.width,view.height).data.slice();`);
+  await evaluate(`window.__preBlob = cctx.getImageData(0,0,chromeCanvas.width,chromeCanvas.height).data.slice();`);
   const b0 = await evaluate(`({x:Math.round(blobs[0].x), y:Math.round(blobs[0].y)})`);
   await dragPx(bPt.x, bPt.y, bPt.x + 60, bPt.y + 40);
   const b1 = await evaluate(`({x:Math.round(blobs[0].x), y:Math.round(blobs[0].y)})`);
   check("a blob can be dragged", b1.x > b0.x + 15 && b1.y > b0.y + 10, { before: b0, after: b1 });
-  check("blobs render above everything", (await evaluate(`(function(){const a=vctx.getImageData(0,0,view.width,view.height).data,b=window.__preBlob;
+  check("blobs render above everything", (await evaluate(`(function(){const a=cctx.getImageData(0,0,chromeCanvas.width,chromeCanvas.height).data,b=window.__preBlob;
      let n=0;for(let i=0;i<a.length;i+=4) if(Math.abs(a[i]-b[i])>8) n++; return n;})()`)) > 100);
 
   const warped = await evaluate(`(function(){

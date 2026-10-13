@@ -57,8 +57,11 @@
   }
   #stage.dragover { outline:2px dashed var(--accent); outline-offset:-8px; }
   #view { display:none; position:absolute; left:0; top:0; transform-origin:0 0; background:#000;
-          touch-action:none; cursor:crosshair;
+          touch-action:none;
           -webkit-user-drag:none; user-select:none; box-shadow:0 0 0 1px #0007; }
+  /* UI chrome (outlines, handles, grips) lives on its own stage-sized canvas, in screen space, so
+     handles on objects dragged outside the image are still drawn and still grabbable. */
+  #chrome { display:none; position:absolute; left:0; top:0; z-index:5; pointer-events:none; }
   #zoomHud { position:absolute; left:10px; bottom:10px; z-index:8; display:flex; gap:4px;
              background:#111c; border:1px solid var(--line); border-radius:8px; padding:3px;
              backdrop-filter:blur(4px); }
@@ -114,9 +117,18 @@
   .layerDot { width:8px; height:8px; border-radius:50%; background:var(--accent); flex:none; margin:0 14px; }
   .layerRow .lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #layerCount { color:var(--muted); font-size:11px; }
-  #layersSec h3 { display:flex; align-items:center; justify-content:space-between; gap:6px; }
-  #layersToggle { min-height:22px; padding:1px 7px; font-size:10px; }
+  #layersSec h3, #annSec h3 { display:flex; align-items:center; justify-content:space-between; gap:6px; }
+  #layersToggle, #annToggle { min-height:22px; padding:1px 7px; font-size:10px; }
   #layersBody { display:flex; flex-direction:column; gap:7px; }
+  #annBody { display:flex; flex-direction:column; gap:7px; }
+  #annList { display:flex; flex-direction:row; gap:4px; overflow-x:auto; padding-bottom:3px; }
+  .annRow { display:flex; align-items:center; gap:5px; padding:3px 8px; border:1px solid var(--line);
+            border-radius:13px; cursor:pointer; font-size:11px; white-space:nowrap; flex:none;
+            background:#2c2d32; touch-action:none; }
+  .annRow:hover { background:#34353b; }
+  .annRow.active { border-color:var(--accent); background:#2b3550; }
+  .annRow .sw { width:10px; height:10px; border-radius:50%; flex:none; border:1px solid #0008; }
+  .annRow .lbl { overflow:hidden; text-overflow:ellipsis; }
 
   #dialog { position:fixed; inset:0; background:#000a; z-index:80; display:flex;
             align-items:center; justify-content:center; padding:18px; }
@@ -178,6 +190,7 @@
 <main>
   <div id="stage">
     <canvas id="view" draggable="false"></canvas>
+    <canvas id="chrome" aria-hidden="true"></canvas>
     <div id="zoomHud" hidden>
       <button id="zoomOut" title="Zoom out (-)">−</button>
       <button id="zoomPct" title="Actual size (100%)">100%</button>
@@ -193,6 +206,15 @@
   </div>
 
   <aside id="panel">
+    <section id="annSec">
+      <h3>Annotations <button id="annToggle" title="Hide / show">Show</button></h3>
+      <div id="annBody" hidden>
+        <div id="annList"></div>
+        <div class="row"><button id="annDel" class="danger" disabled>Delete</button></div>
+        <div class="note">Left to right is back to front (rightmost draws on top). Drag a chip to restack it. Ctrl-click toggles one, Shift-click picks a range — same as on the canvas.</div>
+      </div>
+    </section>
+
     <section id="layersSec">
       <h3>Layers <button id="layersToggle" title="Hide / show">Hide</button></h3>
       <div id="layersBody">
@@ -428,6 +450,7 @@ const $ = s => document.querySelector(s);
 const view = $('#view'), vctx = view.getContext('2d'), stage = $('#stage');
 const panel = $('#panel'), backdrop = $('#backdrop');
 const toolsEl = $('#tools'), fontSel = $('#fontFamily'), layerList = $('#layerList');
+const chromeCanvas = $('#chrome'), cctx = chromeCanvas.getContext('2d');
 const zoomHud = $('#zoomHud'), zoomPct = $('#zoomPct');
 
 /* --------------------------------------------------------------- 3  state */
@@ -448,6 +471,9 @@ let flattenAnnotations = false;
 
 let texts = [];                  // live, movable text boxes
 let selText = null;
+let shapes = [];                 // live annotations: brush / highlight / line / arrow / rect / ellipse
+let selShape = null;             // primary (last-clicked) annotation id
+let selShapes = [];              // full annotation multi-selection
 
 let blobs = [];                  // distort markers: UI only, never exported
 const style = { color:'#ff3b30', width:6, opacity:1, filled:false, fontSize:48, family:'Anton', bold:false, italic:false };
@@ -474,6 +500,7 @@ let spaceDown = false, panDrag = null;     // space / middle-drag panning
 
 // render cache (see §7): the static stack is only re-composited when its signature changes
 let cacheCanvas = null, cacheCtx = null, cacheSigVal = null;
+let chromeDpr = 1;
 let paintSeq = 0;                // bumped by the few in-place pixel writes so the cache notices
 let frameQueued = false;
 
@@ -550,8 +577,9 @@ function snapshot() {
     base, overlay,
     layers: ls,
     texts: texts.map(t => ({ ...t })),
+    shapes: shapes.map(cloneShape),
     blobs: blobs.map(b => ({ ...b })),
-    sel: selText, selLayer, selLayers: [...selLayers],
+    sel: selText, selShape, selShapes: [...selShapes], selLayer, selLayers: [...selLayers],
   };
   s.surfaces = [...new Set([base, overlay, ...ls.map(l => l.c)])];
   s.surfaces.forEach(pin);
@@ -592,8 +620,11 @@ function restore(s) {
   overlay = s.overlay; octx = overlay.getContext('2d');
   layers = s.layers.map(l => ({ ...l }));
   texts = s.texts.map(t => ({ ...t }));
+  shapes = (s.shapes || []).map(cloneShape);
   blobs = (s.blobs || []).map(b => ({ ...b }));
-  selText = s.sel; selLayer = s.selLayer; selLayers = s.selLayers ? [...s.selLayers] : [];
+  selText = s.sel; selShape = s.selShape !== undefined ? s.selShape : null;
+  selShapes = s.selShapes ? [...s.selShapes] : (selShape ? [selShape] : []);
+  selLayer = s.selLayer; selLayers = s.selLayers ? [...s.selLayers] : [];
   resizeView(); render(); updateHistoryUI(); updateSelInfo(); updateLayerUI();
 }
 function undo() {
@@ -636,7 +667,7 @@ function setSelection(ids) {
   for (const id of ids) if (layers.some(l => l.id === id) && !seen.includes(id)) seen.push(id);
   selLayers = seen;
   selLayer = seen.length ? seen[seen.length - 1] : null;
-  if (selLayer) selText = null;
+  if (selLayer) { selText = null; selShape = null; selShapes = []; }
   updateLayerUI();
 }
 // Press-time selection for a layer drag, shared by the layer body and the centre grab block.
@@ -652,6 +683,172 @@ function selectForDrag(id, additive) {
   if (!inSel) setSelection([id]);
   else if (selLayer !== id) { selLayer = id; updateLayerUI(); }
   return null;
+}
+
+/* ------------------------------------------------- 6b  annotation model */
+// Annotations are live objects (not baked pixels): they keep their defining geometry and style
+// and are re-drawn every frame, exactly like text boxes. `render()` re-draws `shapes` in order.
+const isStroke = s => s.type === 'brush' || s.type === 'highlight';
+const touchShape = s => { s.rev = (s.rev || 0) + 1; };
+// annotations are metadata only, so history copies them cheaply
+const cloneShape = s => isStroke(s) ? { ...s, points: s.points.map(p => ({ ...p })) } : { ...s };
+// Raw geometry bbox (no stroke padding) - what the resize handles sit on.
+function shapeBox(s) {
+  if (isStroke(s)) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of s.points) {
+      if (p.x < x0) x0 = p.x; if (p.y < y0) y0 = p.y;
+      if (p.x > x1) x1 = p.x; if (p.y > y1) y1 = p.y;
+    }
+    if (!isFinite(x0)) return { x:0, y:0, w:0, h:0 };
+    return { x:x0, y:y0, w:x1 - x0, h:y1 - y0 };
+  }
+  return { x:Math.min(s.x1, s.x2), y:Math.min(s.y1, s.y2), w:Math.abs(s.x2 - s.x1), h:Math.abs(s.y2 - s.y1) };
+}
+function selectedShape() { return shapes.find(s => s.id === selShape) || null; }
+function selectedShapeSet() {
+  const ids = selShapes.length ? selShapes : (selShape ? [selShape] : []);
+  return ids.map(id => shapes.find(s => s.id === id)).filter(Boolean);
+}
+function setShapeSel(ids) {
+  const seen = [];
+  for (const id of ids) if (shapes.some(s => s.id === id) && !seen.includes(id)) seen.push(id);
+  selShapes = seen;
+  selShape = seen.length ? seen[seen.length - 1] : null;
+  if (selShape) { selText = null; selLayers = []; selLayer = null; }
+  updateLayerUI(); updateSelBar();
+}
+function selectShape(s) { setShapeSel(s ? [s.id] : []); }
+function clearShapeSel() { selShape = null; selShapes = []; }
+// Press-time selection for an annotation drag, mirroring selectForDrag for layers. Shift = range
+// from the primary; ctrl/meta = toggle. An additive press on something already selected is
+// deferred and toggled off on pointerup ONLY if the gesture never moved (so drag still drags).
+function selectForShapeDrag(id, additive, shift) {
+  const inSel = selShapes.includes(id);
+  if (shift && selShape) {
+    const a = shapes.findIndex(z => z.id === selShape), b = shapes.findIndex(z => z.id === id);
+    setShapeSel(shapes.slice(Math.min(a, b), Math.max(a, b) + 1).map(z => z.id));
+    return null;
+  }
+  if (additive) {
+    if (inSel) return id;
+    setShapeSel([...selShapes, id]);
+    return null;
+  }
+  if (!inSel) setShapeSel([id]);
+  else if (selShape !== id) { selShape = id; updateLayerUI(); }
+  return null;
+}
+function shapeHandlePoints(s) {
+  const b = shapeBox(s);
+  const c = [b.x + b.w / 2, b.y + b.h / 2];   // centre = grab-and-move grip (bbox centre is the
+  if (s.type === 'line' || s.type === 'arrow') return { p1:[s.x1, s.y1], p2:[s.x2, s.y2], c };  // midpoint for a 2-point shape)
+  return {
+    nw:[b.x, b.y],            n:[b.x + b.w / 2, b.y],  ne:[b.x + b.w, b.y],
+    w:[b.x, b.y + b.h / 2],                              e:[b.x + b.w, b.y + b.h / 2],
+    sw:[b.x, b.y + b.h],      s:[b.x + b.w / 2, b.y + b.h], se:[b.x + b.w, b.y + b.h],
+    c,
+  };
+}
+const segDist2 = (px, py, ax, ay, bx, by) => {
+  const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+  const t = l2 ? clamp(((px - ax) * dx + (py - ay) * dy) / l2, 0, 1) : 0;
+  const qx = ax + t * dx - px, qy = ay + t * dy - py;
+  return qx * qx + qy * qy;
+};
+function hitShape(p) {
+  for (let i = shapes.length - 1; i >= 0; i--) {
+    const s = shapes[i];
+    const tol = Math.max(7, s.width * (s.type === 'highlight' ? 1.5 : 0.8) + 4);
+    if (isStroke(s)) {
+      if (s.points.length === 1 && Math.hypot(p.x - s.points[0].x, p.y - s.points[0].y) <= tol) return s;
+      for (let j = 1; j < s.points.length; j++) {
+        const a = s.points[j - 1], b = s.points[j];
+        if (segDist2(p.x, p.y, a.x, a.y, b.x, b.y) <= tol * tol) return s;
+      }
+    } else if (s.type === 'line' || s.type === 'arrow') {
+      if (segDist2(p.x, p.y, s.x1, s.y1, s.x2, s.y2) <= tol * tol) return s;
+    } else {
+      const b = shapeBox(s);
+      if (p.x >= b.x - 5 && p.x <= b.x + b.w + 5 && p.y >= b.y - 5 && p.y <= b.y + b.h + 5) return s;
+    }
+  }
+  return null;
+}
+// Resize handles live on the primary annotation; EVERY selected annotation gets a centre grab
+// grip which moves the whole selection - that is what makes strokes, lines and arrows easy to pick
+// up (they are thin, so the body itself is a much smaller target).
+function shapeOrig(s) { return isStroke(s) ? s.points.map(p => ({ ...p })) : { x1:s.x1, y1:s.y1, x2:s.x2, y2:s.y2 }; }
+function moveShapeTo(s, o, dx, dy) {
+  if (Array.isArray(o)) s.points = o.map(p => ({ x:p.x + dx, y:p.y + dy }));
+  else { s.x1 = o.x1 + dx; s.y1 = o.y1 + dy; s.x2 = o.x2 + dx; s.y2 = o.y2 + dy; }
+  touchShape(s);
+}
+// Drag a handle: boxes/strokes resize their bbox, lines/arrows just move the grabbed endpoint.
+function resizeShapeTo(s, d, p) {
+  if (s.type === 'line' || s.type === 'arrow') {
+    if (d.handle === 'p1') { s.x1 = p.x; s.y1 = p.y; } else { s.x2 = p.x; s.y2 = p.y; }
+    touchShape(s); return;
+  }
+  const ow = Math.max(1, d.ow), oh = Math.max(1, d.oh), right = d.ox + ow, bottom = d.oy + oh;
+  const MIN = 6;
+  let nx = d.ox, ny = d.oy, nw = ow, nh = oh;
+  if (d.handle === 'e' || d.handle === 'w') {
+    nw = Math.max(MIN, d.handle === 'e' ? (p.x - d.ox) : (right - p.x));
+    nx = d.handle === 'e' ? d.ox : right - nw;
+  } else if (d.handle === 'n' || d.handle === 's') {
+    nh = Math.max(MIN, d.handle === 's' ? (p.y - d.oy) : (bottom - p.y));
+    ny = d.handle === 's' ? d.oy : bottom - nh;
+  } else {
+    let k;
+    if (d.handle === 'se')      k = Math.max((p.x - d.ox) / ow, (p.y - d.oy) / oh);
+    else if (d.handle === 'nw') k = Math.max((right - p.x) / ow, (bottom - p.y) / oh);
+    else if (d.handle === 'ne') k = Math.max((p.x - d.ox) / ow, (bottom - p.y) / oh);
+    else                        k = Math.max((right - p.x) / ow, (p.y - d.oy) / oh);
+    k = clamp(k, 0.02, 30);
+    nw = ow * k; nh = oh * k;
+    if (d.handle === 'nw')      { nx = right - nw; ny = bottom - nh; }
+    else if (d.handle === 'ne') { nx = d.ox;       ny = bottom - nh; }
+    else if (d.handle === 'sw') { nx = right - nw; ny = d.oy; }
+  }
+  if (isStroke(s) && d.origPoints) {
+    const sx = nw / ow, sy = nh / oh;
+    s.points = d.origPoints.map(q => ({ x:nx + (q.x - d.ox) * sx, y:ny + (q.y - d.oy) * sy }));
+  } else {
+    s.x1 = nx; s.y1 = ny; s.x2 = nx + nw; s.y2 = ny + nh;
+  }
+  touchShape(s);
+}
+function dupShape(s) {
+  const c = { ...s, id: uid(), rev: 0 };
+  const off = Math.max(14, (s.width || 4) * 2.5);
+  if (isStroke(s)) c.points = s.points.map(p => ({ x:p.x + off, y:p.y + off }));
+  else { c.x1 += off; c.y1 += off; c.x2 += off; c.y2 += off; }
+  return c;
+}
+function translateShape(s, dx, dy) {
+  if (isStroke(s)) s.points = s.points.map(p => ({ x:p.x + dx, y:p.y + dy }));
+  else { s.x1 += dx; s.y1 += dy; s.x2 += dx; s.y2 += dy; }
+  touchShape(s);
+}
+function scaleShape(s, kx, ky) {
+  const kw = (kx + ky) / 2;
+  if (isStroke(s)) { s.points = s.points.map(p => ({ x:p.x * kx, y:p.y * ky })); s.width *= kw; }
+  else { s.x1 *= kx; s.y1 *= ky; s.x2 *= kx; s.y2 *= ky; s.width *= kw; }
+  touchShape(s);
+}
+// Map every point of a shape through a whole-canvas rotate / flip, then keep boxes axis-aligned.
+function mapShape(s, fn) {
+  if (isStroke(s)) { s.points = s.points.map(fn); }
+  else {
+    const a = fn({ x:s.x1, y:s.y1 }), b = fn({ x:s.x2, y:s.y2 });
+    s.x1 = a.x; s.y1 = a.y; s.x2 = b.x; s.y2 = b.y;
+    if (s.type === 'rect' || s.type === 'ellipse') {
+      if (s.x1 > s.x2) { const t = s.x1; s.x1 = s.x2; s.x2 = t; }
+      if (s.y1 > s.y2) { const t = s.y1; s.y1 = s.y2; s.y2 = t; }
+    }
+  }
+  touchShape(s);
 }
 
 /* -------------------------------------------------------------- 7  render */
@@ -688,15 +885,24 @@ function paintText(ctx, t) {
   textLines(t).forEach((l, i) => ctx.fillText(l, t.x, t.y + i * t.size * 1.15));
   ctx.restore();
 }
-function drawSelection(t) {
+function drawSelection(t, faint = false) {
   const b = textBBox(t);
   const s = viewScale();
-  vctx.save();
-  vctx.strokeStyle = '#3b82f6';
-  vctx.lineWidth = 2 / s;
-  vctx.setLineDash([6 / s, 4 / s]);
-  vctx.strokeRect(t.x - 4 / s, t.y - 4 / s, b.w + 8 / s, b.h + 8 / s);
-  vctx.restore();
+  const x = t.x - 4 / s, y = t.y - 4 / s, w = b.w + 8 / s, h = b.h + 8 / s;
+  cctx.save();
+  cctx.strokeStyle = faint ? 'rgba(59,130,246,.6)' : '#3b82f6';
+  cctx.lineWidth = (faint ? 1.2 : 2) / s;
+  cctx.setLineDash(faint ? [5 / s, 4 / s] : [6 / s, 4 / s]);
+  cctx.strokeRect(x, y, w, h);
+  cctx.setLineDash([]);
+  if (faint) {                                   // faint = unselected: show the box ends too
+    const hs = (16 / s) * 0.6;
+    cctx.fillStyle = 'rgba(255,255,255,.92)'; cctx.strokeStyle = 'rgba(59,130,246,.9)'; cctx.lineWidth = 1.5 / s;
+    for (const [hx, hy] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) {
+      cctx.beginPath(); cctx.rect(hx - hs / 2, hy - hs / 2, hs, hs); cctx.fill(); cctx.stroke();
+    }
+  }
+  cctx.restore();
 }
 function paintShape(ctx, s) {
   ctx.save();
@@ -727,9 +933,35 @@ function paintShape(ctx, s) {
   }
   ctx.restore();
 }
+function drawShapeOutline(s, isPrimary, faint = false) {
+  const sc = viewScale(), t = 16 / sc, hs = faint ? t * 0.55 : t;
+  const lineish = s.type === 'line' || s.type === 'arrow';
+  const b = shapeBox(s);
+  cctx.save();
+  cctx.strokeStyle = faint ? 'rgba(59,130,246,.6)' : (isPrimary ? '#3b82f6' : 'rgba(59,130,246,.7)');
+  cctx.lineWidth = (isPrimary ? 1.6 : 1.2) / sc;
+  cctx.setLineDash([7 / sc, 5 / sc]);
+  if (lineish) { cctx.beginPath(); cctx.moveTo(s.x1, s.y1); cctx.lineTo(s.x2, s.y2); cctx.stroke(); }
+  else cctx.strokeRect(b.x - 3 / sc, b.y - 3 / sc, b.w + 6 / sc, b.h + 6 / sc);
+  cctx.setLineDash([]);
+  const pts = shapeHandlePoints(s);
+  // handles on the primary; small "end" markers on every unselected one under the Move tool
+  if (isPrimary || faint) {
+    cctx.fillStyle = faint ? 'rgba(255,255,255,.92)' : '#fff';
+    cctx.strokeStyle = 'rgba(59,130,246,.9)';
+    cctx.lineWidth = (faint ? 1.5 : 2) / sc;
+    for (const k in pts) {
+      if (k === 'c') continue;
+      const [hx, hy] = pts[k];
+      cctx.beginPath(); cctx.rect(hx - hs / 2, hy - hs / 2, hs, hs); cctx.fill(); cctx.stroke();
+    }
+  }
+  cctx.restore();
+}
 function drawStack(ctx) {
   ctx.drawImage(base, 0, 0);
   for (const l of layers) ctx.drawImage(l.c, l.x, l.y, l.w, l.h);
+  for (const s of shapes) paintShape(ctx, s);
   ctx.drawImage(overlay, 0, 0);
   for (const t of texts) paintText(ctx, t);
 }
@@ -739,6 +971,11 @@ function sceneSig() {
   let s = base.width + 'x' + base.height + '\u0001' + cid(base) + '\u0001' + cid(overlay) + '\u0001' + paintSeq;
   for (const l of layers) s += '\u0002' + cid(l.c) + ',' + Math.round(l.x) + ',' + Math.round(l.y) + ',' + Math.round(l.w) + ',' + Math.round(l.h);
   s += '\u0003';
+  for (const sh of shapes) {
+    s += '\u0004' + sh.id + ',' + sh.type + ',' + (sh.rev || 0) + ',' + sh.color + ',' + sh.width + ',' + sh.opacity + ',' + (sh.filled ? 1 : 0);
+    s += isStroke(sh) ? ',' + sh.points.length : ',' + Math.round(sh.x1) + ',' + Math.round(sh.y1) + ',' + Math.round(sh.x2) + ',' + Math.round(sh.y2);
+  }
+  s += '\u0005';
   for (const t of texts) s += '\u0002' + t.x.toFixed(1) + ',' + t.y.toFixed(1) + ',' + t.size + ',' + t.color + ',' + t.opacity + ',' + (t.bold ? 1 : 0) + (t.italic ? 1 : 0) + ',' + t.family + ',' + t.text;
   return s;
 }
@@ -784,6 +1021,7 @@ function applyView() {
   view.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
   atFit = Math.abs(zoom - fitZoom) < 1e-9;
   zoomPct.textContent = Math.round(zoom * 100) + '%';
+  renderChrome();
 }
 function fitView(redraw = true) {
   fitZoom = fitScale(); zoom = fitZoom;
@@ -801,69 +1039,87 @@ function setZoom(z, cx, cy, redraw = true) {
   clampPan(); applyView();
   if (redraw) render();
 }
-function drawLayerOutline(l, isPrimary) {
-  const s = viewScale(), t = 16 / s;
-  vctx.save();
-  vctx.fillStyle = isPrimary ? 'rgba(34,197,94,.12)' : 'rgba(34,197,94,.06)';
-  vctx.fillRect(l.x, l.y, l.w, l.h);
-  vctx.strokeStyle = '#22c55e';
-  vctx.lineWidth = (isPrimary ? 2.5 : 1.5) / s;
-  vctx.setLineDash(isPrimary ? [] : [9 / s, 6 / s]);
-  vctx.strokeRect(l.x, l.y, l.w, l.h);
-  vctx.setLineDash([]);
-  if (isPrimary) {
+// Centre grips. Layers use a green-ringed square, annotations and text a blue-ringed circle.
+// `big` marks the selected object; unselected ones get a slightly smaller, softer grip.
+function drawLayerGrip(l, big = true) {
+  const sc = viewScale(), t = 16 / sc, cs = t * (big ? 1.2 : 0.9);
+  const [cx, cy] = layerHandlePoints(l).c;
+  cctx.save();
+  cctx.fillStyle = '#ffffff';
+  cctx.fillRect(cx - cs / 2, cy - cs / 2, cs, cs);
+  cctx.strokeStyle = '#22c55e'; cctx.lineWidth = (big ? 2.5 : 1.8) / sc;
+  cctx.strokeRect(cx - cs / 2, cy - cs / 2, cs, cs);
+  cctx.restore();
+}
+function drawCenterGrip(cx, cy, big = true) {
+  const sc = viewScale(), r = (16 / sc) * (big ? 0.8 : 0.6);
+  cctx.save();
+  cctx.beginPath(); cctx.arc(cx, cy, r, 0, Math.PI * 2);
+  cctx.fillStyle = '#ffffff'; cctx.fill();
+  cctx.strokeStyle = '#3b82f6'; cctx.lineWidth = (big ? 2 : 1.5) / sc;
+  cctx.stroke();
+  cctx.restore();
+}
+function drawLayerOutline(l, isPrimary, faint = false) {
+  const s = viewScale(), t = 16 / s, hs = faint ? t * 0.6 : t;
+  cctx.save();
+  cctx.fillStyle = faint ? 'rgba(34,197,94,.05)' : (isPrimary ? 'rgba(34,197,94,.12)' : 'rgba(34,197,94,.06)');
+  cctx.fillRect(l.x, l.y, l.w, l.h);
+  cctx.strokeStyle = faint ? 'rgba(34,197,94,.6)' : '#22c55e';
+  cctx.lineWidth = (isPrimary ? 2.5 : 1.5) / s;
+  cctx.setLineDash(isPrimary ? [] : [9 / s, 6 / s]);
+  cctx.strokeRect(l.x, l.y, l.w, l.h);
+  cctx.setLineDash([]);
+  if (isPrimary || faint) {
     const pts = layerHandlePoints(l);
-    vctx.fillStyle = '#22c55e';
+    cctx.fillStyle = faint ? 'rgba(255,255,255,.92)' : '#22c55e';
+    cctx.strokeStyle = 'rgba(34,197,94,.9)';
+    cctx.lineWidth = 1.5 / s;
     for (const k in pts) {
       if (k === 'c') continue;
       const [hx, hy] = pts[k];
-      vctx.fillRect(hx - t / 2, hy - t / 2, t, t);
+      cctx.beginPath(); cctx.rect(hx - hs / 2, hy - hs / 2, hs, hs);
+      if (faint) { cctx.fill(); cctx.stroke(); } else cctx.fill();
     }
   }
-  // centre grab block: white with a green ring, so it reads as "drag me", not "resize me"
-  const [cx, cy] = layerHandlePoints(l).c, cs = t * 1.2;
-  vctx.fillStyle = '#ffffff';
-  vctx.fillRect(cx - cs / 2, cy - cs / 2, cs, cs);
-  vctx.strokeStyle = '#22c55e'; vctx.lineWidth = 2.5 / s;
-  vctx.strokeRect(cx - cs / 2, cy - cs / 2, cs, cs);
-  vctx.restore();
+  cctx.restore();
 }
 function drawHoverOutline(l) {
   const s = viewScale();
-  vctx.save();
-  vctx.strokeStyle = '#60a5fa'; vctx.lineWidth = 1.5 / s;
-  vctx.setLineDash([4 / s, 4 / s]);
-  vctx.strokeRect(l.x, l.y, l.w, l.h);
-  vctx.restore();
+  cctx.save();
+  cctx.strokeStyle = '#60a5fa'; cctx.lineWidth = 1.5 / s;
+  cctx.setLineDash([4 / s, 4 / s]);
+  cctx.strokeRect(l.x, l.y, l.w, l.h);
+  cctx.restore();
 }
 function drawBlob(b) {
   const s = viewScale(), t = 13 / s;
-  vctx.save();
-  vctx.beginPath(); vctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-  vctx.fillStyle = 'rgba(236,72,153,.13)'; vctx.fill();
-  vctx.strokeStyle = '#ec4899'; vctx.lineWidth = 2 / s; vctx.setLineDash([8 / s, 6 / s]);
-  vctx.stroke();
-  vctx.setLineDash([]);
-  vctx.fillStyle = '#ec4899';
-  vctx.fillRect(b.x - t / 2, b.y - t / 2, t, t);
-  vctx.restore();
+  cctx.save();
+  cctx.beginPath(); cctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+  cctx.fillStyle = 'rgba(236,72,153,.13)'; cctx.fill();
+  cctx.strokeStyle = '#ec4899'; cctx.lineWidth = 2 / s; cctx.setLineDash([8 / s, 6 / s]);
+  cctx.stroke();
+  cctx.setLineDash([]);
+  cctx.fillStyle = '#ec4899';
+  cctx.fillRect(b.x - t / 2, b.y - t / 2, t, t);
+  cctx.restore();
 }
 function drawSelectionOverlay(r) {
   const s = viewScale();
-  vctx.save();
-  vctx.fillStyle = 'rgba(0,0,0,.14)';
-  vctx.beginPath(); vctx.rect(0, 0, view.width, view.height); vctx.rect(r.x, r.y, r.w, r.h);
-  vctx.fill('evenodd');
-  vctx.strokeStyle = '#3b82f6'; vctx.lineWidth = 1.5 / s; vctx.setLineDash([7 / s, 5 / s]);
-  vctx.strokeRect(r.x, r.y, r.w, r.h);
-  vctx.setLineDash([]);
+  cctx.save();
+  cctx.fillStyle = 'rgba(0,0,0,.14)';
+  cctx.beginPath(); cctx.rect(0, 0, view.width, view.height); cctx.rect(r.x, r.y, r.w, r.h);
+  cctx.fill('evenodd');
+  cctx.strokeStyle = '#3b82f6'; cctx.lineWidth = 1.5 / s; cctx.setLineDash([7 / s, 5 / s]);
+  cctx.strokeRect(r.x, r.y, r.w, r.h);
+  cctx.setLineDash([]);
   const t = 9 / s;
-  vctx.fillStyle = '#3b82f6';
-  for (const [cx, cy] of [[r.x,r.y],[r.x+r.w,r.y],[r.x,r.y+r.h],[r.x+r.w,r.y+r.h]]) vctx.fillRect(cx - t/2, cy - t/2, t, t);
-  vctx.restore();
+  cctx.fillStyle = '#3b82f6';
+  for (const [cx, cy] of [[r.x,r.y],[r.x+r.w,r.y],[r.x,r.y+r.h],[r.x+r.w,r.y+r.h]]) cctx.fillRect(cx - t/2, cy - t/2, t, t);
+  cctx.restore();
 }
 function render() {
-  if (!hasImage) return;
+  if (!hasImage) { renderChrome(); return; }
   vctx.setTransform(1, 0, 0, 1, 0, 0);
   vctx.filter = 'none';
   vctx.clearRect(0, 0, view.width, view.height);
@@ -885,19 +1141,48 @@ function render() {
     vctx.drawImage(stack, 0, 0);
     vctx.filter = 'none';
   }
-  const sel = texts.find(t => t.id === selText);
-  if (sel) drawSelection(sel);
-  for (const l of selectedLayerSet()) drawLayerOutline(l, l.id === selLayer);
-  if (tool === 'move' && hoverId && !selLayers.includes(hoverId)) {
+  renderChrome();
+  updateSelBar();
+}
+// All UI chrome is drawn on its own stage-sized canvas, in screen space, so it is never clipped by
+// the image bounds - handles on objects dragged off the edge stay visible and grabbable.
+function sizeChrome() {
+  const r = stage.getBoundingClientRect();
+  chromeDpr = Math.min(2, window.devicePixelRatio || 1);
+  const w = Math.max(1, Math.round(r.width * chromeDpr)), h = Math.max(1, Math.round(r.height * chromeDpr));
+  if (chromeCanvas.width !== w || chromeCanvas.height !== h) { chromeCanvas.width = w; chromeCanvas.height = h; }
+  chromeCanvas.style.width = r.width + 'px';
+  chromeCanvas.style.height = r.height + 'px';
+}
+function renderChrome() {
+  sizeChrome();
+  cctx.setTransform(1, 0, 0, 1, 0, 0);
+  cctx.filter = 'none';
+  cctx.clearRect(0, 0, chromeCanvas.width, chromeCanvas.height);
+  if (!hasImage) return;
+  const d = chromeDpr * zoom;
+  cctx.setTransform(d, 0, 0, d, chromeDpr * pan.x, chromeDpr * pan.y);
+  cctx.lineJoin = 'round'; cctx.lineCap = 'round';
+  const selL = new Set(selectedLayerSet().map(l => l.id));
+  const selS = new Set(selectedShapeSet().map(s => s.id));
+  // Move tool: outline EVERY object and show its ends + centre grip, so nothing is invisible or
+  // unreachable - including anything dragged off the edge of the image.
+  for (const l of layers) if (tool === 'move' || selL.has(l.id)) drawLayerOutline(l, selL.has(l.id), !selL.has(l.id));
+  for (const s of shapes) if (tool === 'move' || selS.has(s.id)) drawShapeOutline(s, selS.has(s.id), !selS.has(s.id));
+  for (const t of texts) if (tool === 'move' || t.id === selText) drawSelection(t, !(t.id === selText));
+  if (tool === 'move' && hoverId && !selL.has(hoverId)) {
     const hl = layers.find(l => l.id === hoverId);
     if (hl) drawHoverOutline(hl);
   }
-  if (drag && drag.shape) paintShape(vctx, drag.shape);
+  if (drag && drag.shape) paintShape(cctx, drag.shape);      // live shape preview
   if (crop) drawCropOverlay();
   else if (drag && drag.kind === 'marquee') drawSelectionOverlay(marqueeRect(drag));
   else if (selection) drawSelectionOverlay(selection);
-  for (const b of blobs) drawBlob(b);        // UI only, above everything
-  updateSelBar();
+  for (const b of blobs) drawBlob(b);                        // UI only
+  // Centre grips are drawn LAST and picked FIRST, so they always sit on/above every other handle.
+  for (const l of layers) if (tool === 'move' || selL.has(l.id)) drawLayerGrip(l, l.id === selLayer);
+  for (const s of shapes) if (tool === 'move' || selS.has(s.id)) { const c = shapeHandlePoints(s).c; drawCenterGrip(c[0], c[1], s.id === selShape); }
+  for (const t of texts) if (tool === 'move' || t.id === selText) { const b = textBBox(t); drawCenterGrip(t.x + b.w / 2, t.y + b.h / 2, t.id === selText); }
 }
 
 /* -------------------------------------------------------------- 8  pointer */
@@ -910,7 +1195,9 @@ function setTool(id) {
   $('#wandSec').hidden = id !== 'wand';
   $('#cropSec').hidden = !crop;
   if (id === 'highlight' && $('#opacity').value === '1') setRange('opacity', 0.4);
-  if (id !== 'move' && id !== 'text') { selText = null; updateSelBar(); }
+  if (id !== 'move' && id !== 'text') { selText = null; clearShapeSel(); }
+  else if (id === 'text') clearShapeSel();          // text tool: keep the text box, drop annotations
+  updateAnnUI(); updateSelBar();
   render();
 }
 function toCanvas(e) {
@@ -949,25 +1236,31 @@ function layerHandlePoints(l) {
 }
 // Resize handles live on the primary layer; the centre grab block is on every
 // selected layer, so any of them can be dragged to move the whole selection.
-function handleHit(e) {
-  const r = view.getBoundingClientRect(), s = viewScale(), R = HANDLE_PX / 2;
-  const near = pts => {
-    for (const k in pts) {
-      const [hx, hy] = pts[k];
-      if (Math.abs(e.clientX - (r.left + hx * s)) <= R && Math.abs(e.clientY - (r.top + hy * s)) <= R) return k;
-    }
-    return null;
-  };
-  const prim = primaryLayer();
-  if (prim) {
-    const q = layerHandlePoints(prim);
-    const edges = { nw:q.nw, n:q.n, ne:q.ne, w:q.w, e:q.e, sw:q.sw, s:q.s, se:q.se };
-    const k = near(edges);
-    if (k) return { kind:'resize', handle:k };
+// Handle picking is Z-ORDERED, matching what is drawn (grips are drawn last, so they are on top):
+//   1. every centre grip, front-to-back - a grip beats every other handle and every object body,
+//      so a buried layer's grip is clickable straight through the layers above it;
+//   2. the primary selection's own resize handles (beats all content);
+//   3. nothing - the caller then falls through to content, front-most first.
+function topHandleHit(e) {
+  const r = view.getBoundingClientRect(), sc = viewScale(), R = HANDLE_PX / 2;
+  const near = pts => Math.abs(e.clientX - (r.left + pts[0] * sc)) <= R && Math.abs(e.clientY - (r.top + pts[1] * sc)) <= R;
+  // 1. centre grips (same z-order as content: texts over annotations over layers)
+  for (let i = texts.length - 1; i >= 0; i--) {
+    const t = texts[i], b = textBBox(t);
+    if (near([t.x + b.w / 2, t.y + b.h / 2])) return { kind:'textGrip', id:t.id };
   }
-  for (const l of selectedLayerSet()) {
-    const q = layerHandlePoints(l);
-    if (near({ c:q.c })) return { kind:'move', id:l.id };
+  for (let i = shapes.length - 1; i >= 0; i--) if (near(shapeHandlePoints(shapes[i]).c)) return { kind:'shapeGrip', id:shapes[i].id };
+  for (let i = layers.length - 1; i >= 0; i--) if (near(layerHandlePoints(layers[i]).c)) return { kind:'layerGrip', id:layers[i].id };
+  // 2. resize handles of the primary selection
+  const lprim = primaryLayer();
+  if (lprim) {
+    const pts = layerHandlePoints(lprim);
+    for (const k of ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se']) if (near(pts[k])) return { kind:'layerResize', handle:k };
+  }
+  const sprim = selectedShape();
+  if (sprim) {
+    const pts = shapeHandlePoints(sprim);
+    for (const k in pts) if (k !== 'c' && near(pts[k])) return { kind:'shapeResize', handle:k };
   }
   return null;
 }
@@ -1004,14 +1297,15 @@ function layerResizeTo(l, d, p) {
 function startTextDrag(t, p, e) {
   beginGesture();
   drag = { kind:'text', id:t.id, ox:p.x - t.x, oy:p.y - t.y, startX:p.x, startY:p.y, moved:false };
-  try { view.setPointerCapture(e.pointerId); } catch {}
+  try { stage.setPointerCapture(e.pointerId); } catch {}
   render();
 }
 function onPointerDown(e) {
   if (!hasImage) return;
+  if (e.target && e.target.closest && e.target.closest('#zoomHud, #selbar')) return;   // panel chrome
   e.preventDefault();                    // stop the browser's own drag/selection starting on mousedown
   const p = toCanvas(e);
-  const capture = () => { try { view.setPointerCapture(e.pointerId); } catch {} };
+  const capture = () => { try { stage.setPointerCapture(e.pointerId); } catch {} };
 
   if (spaceDown || e.button === 1) { beginPan(e); return; }
   if (tool === 'crop') { cropDown(e, p); capture(); return; }
@@ -1047,27 +1341,57 @@ function onPointerDown(e) {
         render(); return;
       }
     }
-    const hh = handleHit(e);
+    // Handles win over content, in z-order (see topHandleHit).
+    const hh = topHandleHit(e);
     if (hh) {
-      if (hh.kind === 'move') {
+      if (hh.kind === 'textGrip') {
+        const t = texts.find(x => x.id === hh.id);
+        if (t) { selectText(t); startTextDrag(t, p, e); return; }
+      } else if (hh.kind === 'shapeGrip') {
+        const toggleId = selectForShapeDrag(hh.id, e.ctrlKey || e.metaKey, e.shiftKey);
+        const orig = selectedShapeSet().map(t => ({ id:t.id, g: shapeOrig(t) }));
+        beginGesture();
+        drag = { kind:'shapeEdit', mode:'move', id:hh.id, ox:p.x, oy:p.y, orig,
+                 startX:p.x, startY:p.y, moved:false, toggleId };
+        capture(); render(); return;
+      } else if (hh.kind === 'layerGrip') {
         const toggleId = selectForDrag(hh.id, e.ctrlKey || e.metaKey || e.shiftKey);
         beginGesture();
         drag = { kind:'layer', ox:p.x, oy:p.y, startX:p.x, startY:p.y, moved:false, toggleId,
                  orig: movingIds().map(id => { const q = layers.find(z => z.id === id); return { id, x:q.x, y:q.y }; }) };
         capture(); render(); return;
+      } else if (hh.kind === 'layerResize') {
+        const l = primaryLayer();
+        beginGesture();
+        drag = { kind:'layerResize', id:l.id, handle:hh.handle, ox:l.x, oy:l.y, ow:l.w, oh:l.h, startX:p.x, startY:p.y, moved:false };
+        capture(); render(); return;
+      } else {
+        const cur = selectedShape();                     // shapeResize on the primary annotation
+        const b = shapeBox(cur);
+        beginGesture();
+        drag = { kind:'shapeEdit', mode:'resize', id:cur.id, handle:hh.handle,
+                 ox:b.x, oy:b.y, ow:Math.max(1, b.w), oh:Math.max(1, b.h),
+                 origPoints: isStroke(cur) ? cur.points.map(q => ({ ...q })) : null,
+                 startX:p.x, startY:p.y, moved:false };
+        capture(); render(); return;
       }
-      const l = primaryLayer();
-      beginGesture();
-      drag = { kind:'layerResize', id:l.id, handle:hh.handle, ox:l.x, oy:l.y, ow:l.w, oh:l.h, startX:p.x, startY:p.y, moved:false };
-      capture(); render(); return;
     }
     const hit = hitText(p);
     if (hit) {
-      selText = hit.id; selLayer = null; beginGesture();
+      selText = hit.id; clearShapeSel(); selLayers = []; selLayer = null; beginGesture();
       drag = { kind:'text', id:hit.id, ox:p.x - hit.x, oy:p.y - hit.y, startX:p.x, startY:p.y, moved:false };
       capture(); updateLayerUI(); render(); return;
     }
-    selText = null;
+    const hs = hitShape(p);
+    if (hs) {
+      const toggleId = selectForShapeDrag(hs.id, e.ctrlKey || e.metaKey, e.shiftKey);
+      const orig = selectedShapeSet().map(t => ({ id:t.id, g: shapeOrig(t) }));
+      beginGesture();
+      drag = { kind:'shapeEdit', mode:'move', id:hs.id, ox:p.x, oy:p.y, orig,
+               startX:p.x, startY:p.y, moved:false, toggleId };
+      capture(); updateLayerUI(); render(); return;
+    }
+    selText = null; clearShapeSel();
     const lh = hitLayer(p);
     if (lh) {
       if (selLayers.length && !selLayers.includes(selLayer)) selLayers = selLayer ? [selLayer] : [];
@@ -1080,9 +1404,10 @@ function onPointerDown(e) {
     setSelection([]);
     render(); return;
   }
+  selText = null; clearShapeSel(); updateLayerUI();
   beginGesture();
-  drag = { kind:'shape', shape: { type:tool, color:style.color, width:style.width, opacity:style.opacity,
-                                  filled:style.filled, x1:p.x, y1:p.y, x2:p.x, y2:p.y, points:[p] } };
+  drag = { kind:'shape', shape: { id: uid(), rev: 0, type:tool, color:style.color, width:style.width,
+                                  opacity:style.opacity, filled:style.filled, x1:p.x, y1:p.y, x2:p.x, y2:p.y, points:[p] } };
   capture();
   render();
 }
@@ -1119,6 +1444,14 @@ function onPointerMove(e) {
   } else if (drag.kind === 'layerResize') {
     const l = layers.find(x => x.id === drag.id); if (!l) return;
     layerResizeTo(l, drag, p);
+  } else if (drag.kind === 'shapeEdit') {
+    if (drag.mode === 'move') {
+      const dx = p.x - drag.ox, dy = p.y - drag.oy;
+      for (const o of drag.orig) { const sh = shapes.find(z => z.id === o.id); if (sh) moveShapeTo(sh, o.g, dx, dy); }
+    } else {
+      const s = shapes.find(x => x.id === drag.id); if (!s) return;
+      resizeShapeTo(s, drag, p);
+    }
   } else if (drag.kind === 'marquee') {
     drag.x2 = p.x; drag.y2 = p.y;
   } else {
@@ -1133,6 +1466,11 @@ function onPointerUp() {
   if (cropDrag) { cropDrag = null; if (crop && (crop.w < 12 || crop.h < 12)) crop = defaultCrop(); $('#cropSec').hidden = !crop; commitGesture(true); render(); return; }
   if (!drag) return;
   const d = drag; drag = null;
+  if (d.kind === 'shapeEdit') {
+    // additive click that never moved = toggle that annotation off the selection
+    if (d.mode === 'move' && d.toggleId && !d.moved) setShapeSel(selShapes.filter(x => x !== d.toggleId));
+    commitGesture(!!d.moved); render(); return;
+  }
   if (d.kind === 'text') { commitGesture(!!d.moved); render(); return; }
   if (d.kind === 'blob') { commitGesture(!!d.moved || !!d.created); render(); return; }
   if (d.kind === 'layer' || d.kind === 'layerResize') {
@@ -1149,33 +1487,33 @@ function onPointerUp() {
   const s = d.shape;
   const moved = (s.points && s.points.length > 1) || Math.abs(s.x2 - s.x1) > 1 || Math.abs(s.y2 - s.y1) > 1;
   if (!moved) { commitGesture(false); render(); return; }
-  ownOverlay();                    // history may still own this exact canvas
-  paintShape(octx, s);
-  paintSeq++;
+  shapes.push(s);
   commitGesture(true);
+  selectShape(s);                  // keep it selected so it can be tweaked straight away
   render();
 }
 function onPointerCancel() { drag = null; cropDrag = null; panDrag = null; applyCursor(); render(); }
 function onPointerLeave() { if (hoverId) { hoverId = null; scheduleRender(); } }
 function applyCursor() {
-  if (panDrag || spaceDown) { view.style.cursor = 'grab'; return; }
-  view.style.cursor = tool === 'text' ? 'text' : ((tool === 'move' || tool === 'marquee') ? 'default' : 'crosshair');
+  if (panDrag || spaceDown) { stage.style.cursor = 'grab'; return; }
+  stage.style.cursor = tool === 'text' ? 'text' : ((tool === 'move' || tool === 'marquee') ? 'default' : 'crosshair');
 }
 function beginPan(e) {
   panDrag = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
-  try { view.setPointerCapture(e.pointerId); } catch {}
+  try { stage.setPointerCapture(e.pointerId); } catch {}
   applyCursor();
 }
 
 /* ------------------------------------------------------------ 9  text */
 function selectText(t) {
-  selText = t.id;
+  selText = t.id; clearShapeSel(); selLayers = []; selLayer = null;
   style.family = t.family; style.bold = t.bold; style.italic = t.italic;
   $('#fontFamily').value = t.family;
   $('#fontSize').value = Math.min(t.size, 1200);
   $('#fontSizeOut').textContent = Math.round(t.size);
   $('#fontSizeNum').value = Math.round(t.size);
   syncStyleButtons();
+  updateLayerUI();
   updateSelBar();
 }
 function createTextBox(p) {
@@ -1183,7 +1521,7 @@ function createTextBox(p) {
   const t = { id: uid(), x: p.x, y: p.y, text: '', color: style.color, size: style.fontSize,
               family: style.family, bold: style.bold, italic: style.italic,
               opacity: Math.max(0.35, style.opacity) };
-  texts.push(t); selText = t.id;
+  texts.push(t); selText = t.id; clearShapeSel(); selLayers = []; selLayer = null;
   openTextEditor(t, pre, true);
 }
 function editSelected() {
@@ -1223,29 +1561,47 @@ function openTextEditor(t, pre, isNew) {
   });
 }
 function deleteSelected() {
-  if (!selText) return;
-  const t = texts.find(x => x.id === selText); if (!t) return;
+  const t = texts.find(x => x.id === selText);
+  const ss = selectedShapeSet();
+  if (!t && !ss.length) return;
   const pre = snapshot();
-  texts = texts.filter(x => x !== t); selText = null;
+  if (t) { texts = texts.filter(x => x !== t); selText = null; }
+  if (ss.length) { const ids = new Set(ss.map(s => s.id)); shapes = shapes.filter(s => !ids.has(s.id)); clearShapeSel(); }
   commitPre(pre);
-  render();
+  render(); updateLayerUI();
+}
+// The Annotations section's Delete button deletes only annotations.
+function deleteSelectedAnns() {
+  const ss = selectedShapeSet();
+  if (!ss.length) return;
+  const pre = snapshot();
+  const ids = new Set(ss.map(s => s.id));
+  shapes = shapes.filter(s => !ids.has(s.id));
+  clearShapeSel();
+  commitPre(pre);
+  render(); updateLayerUI(); updateSelBar();
 }
 function duplicateSelected() {
-  const t = texts.find(x => x.id === selText); if (!t) return;
+  const t = texts.find(x => x.id === selText);
+  const ss = selectedShapeSet();
+  if (!t && !ss.length) return;
   const pre = snapshot();
-  const c = { ...t, id: uid(), x: t.x + t.size * 0.4, y: t.y + t.size * 0.4 };
-  texts.push(c); selText = c.id;
+  if (t) { const c = { ...t, id: uid(), x: t.x + t.size * 0.4, y: t.y + t.size * 0.4 }; texts.push(c); selText = c.id; }
+  if (ss.length) { const copies = ss.map(dupShape); for (const c of copies) shapes.push(c); setShapeSel(copies.map(c => c.id)); }
   commitPre(pre);
-  render();
+  render(); updateLayerUI(); updateSelBar();
 }
 function updateSelBar() {
   const bar = $('#selbar');
   const t = texts.find(x => x.id === selText);
-  if (!t || tool === 'crop') { bar.hidden = true; return; }
+  const s = selectedShape();
+  if ((!t && !s) || tool === 'crop') { bar.hidden = true; return; }
+  $('#selEdit').style.display = t ? '' : 'none';      // an annotation has no text to edit
   const r = view.getBoundingClientRect(), sr = stage.getBoundingClientRect();
-  const scale = viewScale(), b = textBBox(t);
-  const left = (r.left - sr.left) + t.x * scale;
-  const top = (r.top - sr.top) + t.y * scale - 42;
+  const scale = viewScale();
+  const b = t ? { x:t.x, y:t.y, w:textBBox(t).w, h:textBBox(t).h } : shapeBox(s);
+  const left = (r.left - sr.left) + b.x * scale;
+  const top = (r.top - sr.top) + b.y * scale - 42;
   bar.hidden = false;
   bar.style.left = clamp(left, 4, Math.max(4, sr.width - 190)) + 'px';
   bar.style.top = clamp(top, 4, sr.height - 40) + 'px';
@@ -1385,6 +1741,7 @@ function flattenChecked() {
   cx.filter = filterCSS(); cx.drawImage(base, 0, 0);
   for (const l of layers) if (ids.has(l.id)) cx.drawImage(l.c, l.x, l.y, l.w, l.h);
   if (ann) {
+    for (const s of shapes) paintShape(cx, s);
     cx.drawImage(overlay, 0, 0);
     for (const t of texts) paintText(cx, t);
   }
@@ -1393,6 +1750,7 @@ function flattenChecked() {
   if (ann) {
     overlay = canvas(base.width, base.height); octx = overlay.getContext('2d');
     texts = []; selText = null;
+    shapes = []; clearShapeSel();
   }
   adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
   checkedLayers = new Set(layers.map(l => l.id));   // survivors are ticked again by default
@@ -1507,7 +1865,7 @@ function updateLayerUI() {
   addRow('Annotations (top)', null, {
     tick: () => flattenAnnotations,
     onTick: v => { flattenAnnotations = v; },
-    onclick: e => { selText = null; render(); }
+    onclick: e => { selText = null; clearShapeSel(); updateSelBar(); render(); }
   });
   for (let i = layers.length - 1; i >= 0; i--) {
     const l = layers[i];
@@ -1525,7 +1883,7 @@ function updateLayerUI() {
         } else {
           setSelection([l.id]);
         }
-        selText = null; render();
+        selText = null; clearShapeSel(); render();
       }
     });
   }
@@ -1543,6 +1901,7 @@ function updateLayerUI() {
   $('#layerCount').textContent = layers.length
     ? layers.length + (layers.length === 1 ? ' layer' : ' layers')
     : 'No layers yet';
+  updateAnnUI();
 }
 function layerMove(dir) {
   const i = layers.findIndex(l => l.id === selLayer); if (i < 0) return;
@@ -1583,6 +1942,77 @@ function toggleLayers() {
   const body = $('#layersBody');
   body.hidden = !body.hidden;
   $('#layersToggle').textContent = body.hidden ? 'Show' : 'Hide';
+}
+function toggleAnn() {
+  const body = $('#annBody');
+  body.hidden = !body.hidden;
+  $('#annToggle').textContent = body.hidden ? 'Show' : 'Hide';
+}
+
+/* ------------------------------------------------- 11b  annotations list */
+const ANN_NAMES = { brush:'Pen', highlight:'Highlight', line:'Line', arrow:'Arrow', rect:'Rect', ellipse:'Ellipse' };
+function updateAnnUI() {
+  const list = $('#annList'); if (!list) return;
+  const del = $('#annDel');
+  if (del) del.disabled = !selectedShapeSet().length;
+  list.innerHTML = '';
+  if (!shapes.length) {
+    const d = document.createElement('div'); d.className = 'note'; d.textContent = 'No annotations yet';
+    list.appendChild(d);
+    return;
+  }
+  for (let i = 0; i < shapes.length; i++) {              // left -> right = back -> front
+    const s = shapes[i];
+    const row = document.createElement('div');
+    row.className = 'annRow' + (selShapes.includes(s.id) ? ' active' : '');
+    row.dataset.id = s.id;
+    row.title = (ANN_NAMES[s.type] || s.type) + ' — drag to restack';
+    const sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = s.color;
+    const lbl = document.createElement('span'); lbl.className = 'lbl'; lbl.textContent = ANN_NAMES[s.type] || s.type;
+    row.append(sw, lbl);
+    row.addEventListener('pointerdown', ev => annRowDown(ev, s.id));
+    list.appendChild(row);
+  }
+}
+// Click selects (same modifiers as the canvas), drag restacks. Display order == array order.
+function annRowDown(e, id) {
+  e.preventDefault(); e.stopPropagation();
+  if (!shapes.some(s => s.id === id)) return;
+  let toggleId = null;
+  const additive = e.ctrlKey || e.metaKey;
+  const inSel = selShapes.includes(id);
+  if (e.shiftKey && selShape && !additive) {
+    const a = shapes.findIndex(z => z.id === selShape), b = shapes.findIndex(z => z.id === id);
+    setShapeSel(shapes.slice(Math.min(a, b), Math.max(a, b) + 1).map(z => z.id));
+  } else if (additive) {
+    if (inSel) toggleId = id; else setShapeSel([...selShapes, id]);
+  } else if (!inSel) setShapeSel([id]);
+  else if (selShape !== id) { selShape = id; updateLayerUI(); }
+
+  const pre = snapshot();
+  let moved = false;
+  const onMove = ev => {
+    const kids = [...$('#annList').children].filter(el => el.dataset && el.dataset.id);
+    let target = -1;
+    for (let i = 0; i < kids.length; i++) {
+      const b = kids[i].getBoundingClientRect();
+      if (ev.clientX >= b.left && ev.clientX < b.right) { target = i; break; }
+    }
+    if (target < 0) return;
+    const cur = shapes.findIndex(x => x.id === id);
+    if (cur < 0 || target === cur) return;
+    const [sh] = shapes.splice(cur, 1);
+    shapes.splice(target, 0, sh);
+    moved = true; render(); updateAnnUI();
+  };
+  const onUp = () => {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    if (toggleId && !moved) setShapeSel(selShapes.filter(x => x !== toggleId));
+    if (moved) commitPre(pre); else drop(pre);
+  };
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
 }
 
 /* ---------------------------------------------------------------- 12  crop */
@@ -1649,25 +2079,25 @@ function applyCropDrag(p) {
 }
 function drawCropOverlay() {
   const s = viewScale();
-  vctx.save();
-  vctx.fillStyle = 'rgba(0,0,0,.58)';
-  vctx.beginPath(); vctx.rect(0, 0, view.width, view.height); vctx.rect(crop.x, crop.y, crop.w, crop.h);
-  vctx.fill('evenodd');
-  vctx.strokeStyle = 'rgba(255,255,255,.4)'; vctx.lineWidth = 1 / s;
+  cctx.save();
+  cctx.fillStyle = 'rgba(0,0,0,.58)';
+  cctx.beginPath(); cctx.rect(0, 0, view.width, view.height); cctx.rect(crop.x, crop.y, crop.w, crop.h);
+  cctx.fill('evenodd');
+  cctx.strokeStyle = 'rgba(255,255,255,.4)'; cctx.lineWidth = 1 / s;
   for (let i = 1; i < 3; i++) {
     const gx = crop.x + crop.w * i / 3, gy = crop.y + crop.h * i / 3;
-    vctx.beginPath(); vctx.moveTo(gx, crop.y); vctx.lineTo(gx, crop.y + crop.h); vctx.stroke();
-    vctx.beginPath(); vctx.moveTo(crop.x, gy); vctx.lineTo(crop.x + crop.w, gy); vctx.stroke();
+    cctx.beginPath(); cctx.moveTo(gx, crop.y); cctx.lineTo(gx, crop.y + crop.h); cctx.stroke();
+    cctx.beginPath(); cctx.moveTo(crop.x, gy); cctx.lineTo(crop.x + crop.w, gy); cctx.stroke();
   }
-  vctx.strokeStyle = '#3b82f6'; vctx.lineWidth = 2 / s;
-  vctx.strokeRect(crop.x, crop.y, crop.w, crop.h);
+  cctx.strokeStyle = '#3b82f6'; cctx.lineWidth = 2 / s;
+  cctx.strokeRect(crop.x, crop.y, crop.w, crop.h);
   const hs = 16 / s, pts = cropHandlePoints();
-  vctx.fillStyle = '#fff'; vctx.lineWidth = 2 / s; vctx.strokeStyle = '#3b82f6';
+  cctx.fillStyle = '#fff'; cctx.lineWidth = 2 / s; cctx.strokeStyle = '#3b82f6';
   for (const k in pts) {
     const [hx, hy] = pts[k];
-    vctx.beginPath(); vctx.rect(hx - hs / 2, hy - hs / 2, hs, hs); vctx.fill(); vctx.stroke();
+    cctx.beginPath(); cctx.rect(hx - hs / 2, hy - hs / 2, hs, hs); cctx.fill(); cctx.stroke();
   }
-  vctx.restore();
+  cctx.restore();
 }
 function applyCrop() {
   if (!crop || crop.w < 8 || crop.h < 8) return cancelCrop();
@@ -1682,6 +2112,10 @@ function applyCrop() {
   texts = texts
     .map(tx => ({ ...tx, x: tx.x - x, y: tx.y - y }))
     .filter(tx => tx.x > -tx.size * 2 && tx.y > -tx.size * 2 && tx.x < w && tx.y < h);
+  shapes.forEach(s => translateShape(s, -x, -y));
+  shapes = shapes.filter(s => { const b = shapeBox(s); return b.x < w && b.y < h && b.x + b.w > 0 && b.y + b.h > 0; });
+  selShapes = selShapes.filter(id => shapes.some(s => s.id === id));
+  if (selShape && !shapes.some(s => s.id === selShape)) selShape = selShapes.length ? selShapes[selShapes.length - 1] : null;
   base = nb; bctx = base.getContext('2d');
   overlay = no; octx = overlay.getContext('2d');
   crop = null; $('#cropSec').hidden = true;
@@ -1712,6 +2146,7 @@ function resizeAll(w, h) {
   const no = canvas(w, h); no.getContext('2d').drawImage(overlay, 0, 0, w, h);
   layers.forEach(l => { l.x *= kx; l.y *= ky; l.w *= kx; l.h *= ky; });
   texts.forEach(t => { t.x *= kx; t.y *= ky; t.size *= ky; });
+  shapes.forEach(s => scaleShape(s, kx, ky));
   blobs.forEach(b => { b.x *= kx; b.y *= ky; b.r *= (kx + ky) / 2; });
   base = nb; bctx = base.getContext('2d');
   overlay = no; octx = overlay.getContext('2d');
@@ -1730,6 +2165,7 @@ function rotate(deg) {
   }
   bakeTexts();
   const W = base.width, H = base.height;
+  shapes.forEach(s => mapShape(s, pt => deg > 0 ? { x: H - pt.y, y: pt.x } : { x: pt.y, y: W - pt.x }));
   layers.forEach(lz => {
     const nx = deg > 0 ? H - (lz.y + lz.h) : lz.y;
     const ny = deg > 0 ? lz.x : W - (lz.x + lz.w);
@@ -1756,6 +2192,7 @@ function flip(axis) {
   if (l) { l.c = mirror(l.c); updateLayerUI(); render(); toast('Flipped layer'); return; }
   bakeTexts();
   const W = base.width, H = base.height;
+  shapes.forEach(s => mapShape(s, pt => axis === 'h' ? { x: W - pt.x, y: pt.y } : { x: pt.x, y: H - pt.y }));
   layers.forEach(lz => {
     const nx = axis === 'h' ? W - (lz.x + lz.w) : lz.x;
     const ny = axis === 'v' ? H - (lz.y + lz.h) : lz.y;
@@ -1885,6 +2322,7 @@ function composite(withAnnotations = true, withFilter = true) {
   rc.drawImage(base, 0, 0);
   for (const l of layers) rc.drawImage(l.c, l.x, l.y, l.w, l.h);
   if (withAnnotations) {
+    for (const s of shapes) paintShape(rc, s);
     rc.drawImage(overlay, 0, 0);
     for (const tx of texts) paintText(rc, tx);
   }
@@ -1932,6 +2370,7 @@ function resizeView() {
   const changed = view.width !== base.width || view.height !== base.height;
   view.width = base.width; view.height = base.height;
   view.style.display = 'block';
+  chromeCanvas.style.display = 'block';
   $('#hint').style.display = 'none';
   $('#rw').value = base.width; $('#rh').value = base.height;
   aspect = base.width / base.height;
@@ -1948,7 +2387,7 @@ function setBase(c) {
 function resetStack(c) {
   hasImage = true;
   dropStack(undoStack); dropStack(redoStack); drop(gestureSnap); gestureSnap = null;
-  texts = []; selText = null; crop = null; cropDrag = null; selection = null;
+  texts = []; selText = null; shapes = []; clearShapeSel(); crop = null; cropDrag = null; selection = null;
   layers = []; selLayer = null; selLayers = [];
   checkedLayers = new Set(); flattenAnnotations = true; clip = null; clipSig = null;
   adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
@@ -2008,7 +2447,7 @@ function newCanvas() {
 }
 function clearEverything() {
   hasImage = false;
-  layers = []; texts = []; selLayer = null; selText = null; selLayers = [];
+  layers = []; texts = []; shapes = []; selLayer = null; selText = null; selShape = null; selShapes = []; selLayers = [];
   checkedLayers = new Set(); flattenAnnotations = true;
   dropStack(undoStack); dropStack(redoStack); drop(gestureSnap); gestureSnap = null;
   selection = null; crop = null; cropDrag = null;
@@ -2016,6 +2455,8 @@ function clearEverything() {
   overlay = canvas(1, 1); octx = overlay.getContext('2d');
   view.width = 1; view.height = 1;
   view.style.display = 'none';
+  chromeCanvas.style.display = 'none';
+  renderChrome();
   $('#hint').style.display = '';
   $('#dialog').hidden = true;
   zoom = fitZoom = 1; pan.x = pan.y = 0; atFit = true; zoomHud.hidden = true; cacheSigVal = null;
@@ -2041,7 +2482,7 @@ function bindRange(id, key, out, xform = v => v) {
     else if (key in wand) { wand[key] = v; }
     else if (key in fx) { fx[key] = v; }
     else if (key in blobCfg) { blobCfg[key] = v; }
-    else style[key] = xform(v);
+    else { style[key] = xform(v); applyStyleToSelection(key, style[key]); }
   });
 }
 function syncStyleButtons() {
@@ -2052,6 +2493,20 @@ function applyToSelectedText(fn) {
   const t = texts.find(x => x.id === selText);
   if (!t) return;
   const pre = snapshot(); fn(t); render(); commitPre(pre);
+}
+// Live style edits (colour / width / opacity / fill) can target a text box or an annotation.
+// A burst of slider / colour-picker input collapses into a single undo entry.
+let styleBurst = null;
+function liveStyleEdit(mutate) {
+  if (!styleBurst) pushUndo();
+  clearTimeout(styleBurst);
+  styleBurst = setTimeout(() => { styleBurst = null; }, 600);
+  mutate(); render();
+}
+function applyStyleToSelection(key, val) {
+  const targets = [texts.find(x => x.id === selText), selectedShape()].filter(o => o && key in o);
+  if (!targets.length) return;
+  liveStyleEdit(() => { for (const o of targets) { o[key] = val; touchShape(o); } });
 }
 // One font size, two inputs (slider for feel, number for 4K-sized type).
 function setFontSize(v) {
@@ -2074,11 +2529,15 @@ function toggleSheet(open) {
   backdrop.classList.toggle('show', open);
 }
 function nudgeSelected(dx, dy) {
+  const t = texts.find(x => x.id === selText);
+  const ss = selectedShapeSet();
   const ids = movingIds();
-  if (!ids.length) return;
+  if (!t && !ss.length && !ids.length) return;
   if (!nudgeTimer) pushUndo();               // one undo entry per burst of arrow presses
   clearTimeout(nudgeTimer);
   nudgeTimer = setTimeout(() => { nudgeTimer = null; }, 700);
+  if (t) { t.x += dx; t.y += dy; }
+  for (const sh of ss) translateShape(sh, dx, dy);
   for (const id of ids) {
     const l = layers.find(z => z.id === id);
     if (l) { l.x += dx; l.y += dy; }
@@ -2116,21 +2575,21 @@ function onKeyDown(e) {
     scheduleClipPaste();
   }
   else if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); selectAll(); }
-  else if (!onControl && e.key.startsWith('Arrow') && movingIds().length) {
+  else if (!onControl && e.key.startsWith('Arrow') && (selText || selShape || movingIds().length)) {
     e.preventDefault();
     const step = e.shiftKey ? 10 : 1;
     nudgeSelected(e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0,
                   e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0);
   }
   else if (!onControl && (e.key === 'Delete' || e.key === 'Backspace')) {
-    if (selText) { e.preventDefault(); deleteSelected(); }
+    if (selText || selShape) { e.preventDefault(); deleteSelected(); }
     else if (movingIds().length) { e.preventDefault(); layerDelete(); }
   }
   else if (e.key === 'Escape') {
     if (!$('#dialog').hidden) { $('#dialog').hidden = true; return; }
     if (crop) cancelCrop();
     if (selection) clearSelection();
-    selText = null; selLayers = []; selLayer = null; drag = null;
+    selText = null; selShape = null; selShapes = []; selLayers = []; selLayer = null; drag = null;
     updateLayerUI(); render();
   }
 }
@@ -2184,10 +2643,12 @@ function wire() {
 
   $('#color').addEventListener('input', e => {
     style.color = e.target.value;
-    const t = texts.find(x => x.id === selText);
-    if (t) { const pre = snapshot(); t.color = style.color; render(); commitPre(pre); }
+    applyStyleToSelection('color', style.color);
   });
-  $('#filled').addEventListener('change', e => style.filled = e.target.checked);
+  $('#filled').addEventListener('change', e => {
+    style.filled = e.target.checked;
+    applyStyleToSelection('filled', style.filled);
+  });
   $('#wandGlobal').addEventListener('change', e => wand.global = e.target.checked);
   $('#wandTransparent').addEventListener('change', e => wand.transparent = e.target.checked);
   $('#fmt').addEventListener('change', syncAdjustUI);
@@ -2210,6 +2671,8 @@ function wire() {
   $('#newCreate').onclick = newCanvas;
   $('#newClearBtn').onclick = clearEverything;
   $('#layersToggle').onclick = toggleLayers;
+  $('#annToggle').onclick = toggleAnn;
+  $('#annDel').onclick = deleteSelectedAnns;
   $('#layFront').onclick = () => layerMove('front');
   $('#layUp').onclick = () => layerMove('up');
   $('#layDown').onclick = () => layerMove('down');
@@ -2264,11 +2727,11 @@ function wire() {
   backdrop.onclick = () => toggleSheet(false);
 
   // canvas pointer
-  view.addEventListener('pointerdown', onPointerDown);
-  view.addEventListener('pointermove', onPointerMove);
-  view.addEventListener('pointerup', onPointerUp);
-  view.addEventListener('pointercancel', onPointerCancel);
-  view.addEventListener('pointerleave', onPointerLeave);
+  stage.addEventListener('pointerdown', onPointerDown);
+  stage.addEventListener('pointermove', onPointerMove);
+  stage.addEventListener('pointerup', onPointerUp);
+  stage.addEventListener('pointercancel', onPointerCancel);
+  stage.addEventListener('pointerleave', onPointerLeave);
 
   // clipboard + drag/drop
   window.addEventListener('paste', onPaste);
