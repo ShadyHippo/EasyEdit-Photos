@@ -113,6 +113,37 @@ async function main() {
   check("hidden sections are genuinely display:none on boot",
     hiddenStates.selbar === "none" && hiddenStates.wand === "none" && hiddenStates.crop === "none", hiddenStates);
 
+  // ---- the tabbed shell: two tool rows, tab panes, sticky Export footer ----
+  const shell = await evaluate(`({
+     topTools:document.querySelectorAll('#tools [data-tool]').length,
+     annTools:document.querySelectorAll('#annTools [data-tool]').length,
+     tabs:[...document.querySelectorAll('#tabs .tab')].map(t=>t.textContent.trim().toLowerCase()),
+     activeTab:document.querySelector('#tabs .tab.on').dataset.tab,
+     hasIcon:!!document.querySelector('#tools [data-tool] svg'),
+     hasKey:!!document.querySelector('#tools [data-tool] .k'),
+     footerInPanel:document.querySelector('#exportFooter').closest('aside').id==='panel',
+     footerVisible:getComputedStyle(document.querySelector('#exportFooter')).display!=='none'})`);
+  check("top row holds the 5 global tools", shell.topTools === 5, shell.topTools);
+  check("annotate row holds the 7 annotation tools", shell.annTools === 7, shell.annTools);
+  check("sidebar exposes the Tool / Layers / Image tabs", shell.tabs.join() === "tool,layers,image", shell.tabs);
+  check("the Tool tab is active on boot", shell.activeTab === "tool", shell.activeTab);
+  check("tool buttons carry an icon and a [hotkey] badge", shell.hasIcon === true && shell.hasKey === true);
+  check("the Export footer is pinned inside the panel", shell.footerInPanel === true && shell.footerVisible === true, shell);
+
+  await evaluate(`document.querySelector('[data-tool=wand]').click()`);
+  const wandTab = await evaluate(`({tab:document.querySelector('#tabs .tab.on').dataset.tab,
+     wand:getComputedStyle(document.querySelector('#wandSec')).display,
+     style:getComputedStyle(document.querySelector('#styleSec')).display})`);
+  check("picking the Wand switches to the Tool tab and shows only wand options",
+    wandTab.tab === "tool" && wandTab.wand !== "none" && wandTab.style === "none", wandTab);
+  await evaluate(`setTab('layers')`);
+  const layTab = await evaluate(`({pane:document.querySelector('#paneLayers').hidden === false,
+     tier:!!document.querySelector('#paneLayers #annSec'),
+     footer:getComputedStyle(document.querySelector('#exportFooter')).display !== 'none'})`);
+  check("the Layers tab shows the annotations tier and keeps the Export footer",
+    layTab.pane === true && layTab.tier === true && layTab.footer === true, layTab);
+  await evaluate(`setTool('move'); setTab('tool');`);
+
   // ---- 1. load via paste ----
   await evaluate(`window.__png='${pngB64}'`);
   await evaluate(`(async()=>{const b=Uint8Array.from(atob(window.__png),c=>c.charCodeAt(0));
@@ -141,7 +172,7 @@ async function main() {
   await evaluate(`window.__small='${smallB64}'`);
   await evaluate(`clearEverything()`);
   check("Clear all empties the canvas", (await evaluate(`hasImage`)) === false);
-  check("Clear all empties the layers panel", (await evaluate(`document.querySelectorAll('#layerList .layerRow').length`)) === 2);
+  check("Clear all empties the layers panel", (await evaluate(`document.querySelectorAll('#layerList .layerRow').length`)) === 1);
   await evaluate(`(async()=>{const b=Uint8Array.from(atob(window.__grad),c=>c.charCodeAt(0));
     const dt=new DataTransfer(); dt.items.add(new File([b],'g.png',{type:'image/png'}));
     window.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
@@ -209,7 +240,7 @@ async function main() {
     await new Promise(r=>setTimeout(r,900));})()`, true);
   const l1 = await evaluate(`({n:layers.length, rows:document.querySelectorAll('#layerList .layerRow').length, sel:!!selLayer, w:view.width})`);
   check("second paste becomes a layer, background untouched", l1.n === 1 && l1.w === 1600, l1);
-  check("layers panel shows annotations + layer + background", l1.rows === 3, l1.rows);
+  check("layers panel shows a layer + background", l1.rows === 2, l1.rows);
   check("the new layer is auto-selected", l1.sel === true);
 
   await evaluate(`(function(){document.querySelector('#newBtn').click();return 1;})()`);
@@ -243,7 +274,7 @@ async function main() {
       await new Promise(r=>setTimeout(r,600));})()`, true);
   }
   const three = await evaluate(`({n:layers.length, rows:document.querySelectorAll('#layerList .layerRow').length})`);
-  check("three pastes stack three layers", three.n === 3 && three.rows === 5, three);
+  check("three pastes stack three layers", three.n === 3 && three.rows === 4, three);
 
   const ids0 = await evaluate(`layers.map(l=>l.id)`);
   await evaluate(`selLayer = layers[0].id; layerMove('front');`);
@@ -480,7 +511,7 @@ async function main() {
   await dragPx(fr.left + fr.width * 0.3, fr.top + fr.height * 0.3, fr.left + fr.width * 0.6, fr.top + fr.height * 0.6);
   await evaluate(`document.querySelector('[data-tool=move]').click()`);
   const beforeF = await evaluate(`({n:layers.length, ann:${annCount}, hash:${baseHash}, tick:document.querySelectorAll('#layerList input[type=checkbox]').length})`);
-  check("there is a tick box per layer row including annotations", beforeF.tick === 2, beforeF.tick);
+  check("there is a tick box per layer row", beforeF.tick === 1, beforeF.tick);
   check("the drawn annotation is live before flattening", beforeF.ann === 1, beforeF.ann);
   await evaluate(`checkedLayers = new Set(layers.map(l => l.id)); flattenAnnotations = true; flattenChecked();`);
   await sleep(250);
@@ -1000,12 +1031,12 @@ async function main() {
   const lns = await rectOf();
   await dragPx(lns.left + lns.width * 0.3, lns.top + lns.height * 0.6, lns.left + lns.width * 0.7, lns.top + lns.height * 0.75);
   await evaluate(`document.querySelector('[data-tool=move]').click()`);
-  const anHidden = await evaluate(`({n:shapes.length, hidden:document.querySelector('#annBody').hidden})`);
-  check("two annotations, and the Annotations panel is hidden by default",
-    anHidden.n === 2 && anHidden.hidden === true, anHidden);
-  await evaluate(`document.querySelector('#annToggle').click()`);
+  await evaluate(`setTab('layers')`);   // the annotation chips live in the Layers tab
+  const anShown = await evaluate(`({n:shapes.length, shown:document.querySelector('#annBody').hidden === false})`);
+  check("two annotations, and the Annotations tier is visible by default",
+    anShown.n === 2 && anShown.shown === true, anShown);
   const anPanel = await evaluate(`({open:document.querySelector('#annBody').hidden === false, rows:document.querySelectorAll('#annList .annRow').length})`);
-  check("the Annotations panel lists every annotation", anPanel.open === true && anPanel.rows === 2, anPanel);
+  check("the Annotations tier lists every annotation", anPanel.open === true && anPanel.rows === 2, anPanel);
   const anOrder0 = await evaluate(`shapes.map(s => s.type)`);
   const anRects = await evaluate(`[...document.querySelectorAll('#annList .annRow')].map(el => el.getBoundingClientRect().toJSON())`);
   const anFrom = { x: anRects[0].left + anRects[0].width / 2, y: anRects[0].top + anRects[0].height / 2 };
@@ -1057,7 +1088,7 @@ async function main() {
     anG1.x1 > anG0.x1 + 15 && anG1.x3 > anG0.x3 + 15, { before: anG0, after: anG1 });
 
   // the same modifiers work in the chip strip
-  await evaluate(`selectShape(shapes[0]); updateLayerUI(); render();`);
+  await evaluate(`setTab('layers'); selectShape(shapes[0]); updateLayerUI(); render();`);
   const anChip = async (i: number, mods: number) => {
     const b = await evaluate(`document.querySelectorAll('#annList .annRow')[${i}].getBoundingClientRect().toJSON()`);
     for (const type of ["mousePressed", "mouseReleased"])

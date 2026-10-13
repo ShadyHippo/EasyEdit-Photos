@@ -20,7 +20,8 @@
 
   :root {
     --bg:#1b1c1f; --panel:#232428; --line:#34353a; --fg:#e7e7ea; --muted:#9a9ba1;
-    --accent:#3b82f6; --danger:#ef4444; --safe-b: env(safe-area-inset-bottom, 0px);
+    --accent:#f59e0b; --accent-hi:#fbbf24; --ink:#221704; --danger:#ef4444;
+    --btn:#2c2d32; --field:#2c2d32; --tier:#202126; --safe-b: env(safe-area-inset-bottom, 0px);
   }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   /* our own display:flex rules would otherwise beat the UA stylesheet's [hidden] rule */
@@ -34,20 +35,30 @@
   }
   input,textarea,select { -webkit-user-select:text; user-select:text; }
 
+  /* ---------------- header: row 1 (global tools + actions), row 2 (annotate tools) ---------- */
   header#bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:8px; background:var(--panel); border-bottom:1px solid var(--line); }
+  #annBar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:7px 8px; background:var(--tier); border-bottom:1px solid var(--line); }
+  #annLbl { color:var(--muted); font-size:10px; font-weight:700; letter-spacing:.09em; text-transform:uppercase; padding:0 6px 0 3px; }
   #brand { display:flex; align-items:center; gap:7px; font-weight:700; letter-spacing:.01em; white-space:nowrap; padding:0 10px 0 2px; }
   #brand img { width:22px; height:22px; display:block; border-radius:5px; }
   .spacer { flex:1; }
-  .group { display:flex; gap:4px; flex-wrap:wrap; }
+  .group { display:flex; gap:4px; flex-wrap:wrap; align-items:center; }
+  .gsep { width:1px; height:22px; background:var(--line); margin:0 4px; flex:none; }
+
   button {
-    font:inherit; color:var(--fg); background:#2c2d32; border:1px solid var(--line);
+    font:inherit; color:var(--fg); background:var(--btn); border:1px solid var(--line);
     padding:6px 10px; border-radius:6px; cursor:pointer; white-space:nowrap; min-height:34px;
+    display:inline-flex; align-items:center; gap:0;
   }
   button:hover { background:#34353b; }
   button:disabled { opacity:.4; cursor:default; }
-  button.active { background:var(--accent); border-color:var(--accent); color:#fff; }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.active { background:var(--accent); border-color:var(--accent); color:var(--ink); font-weight:600; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:var(--ink); font-weight:600; }
   button.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
+  button svg { width:16px; height:16px; flex:none; }
+  #tools button svg, #annTools button svg { margin-right:6px; }
+  .k { font:11px ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--muted); }
+  button.active .k { color:var(--ink); opacity:.65; }
 
   main { flex:1; display:flex; min-height:0; }
   #stage {
@@ -82,21 +93,47 @@
   }
   #selbar button { min-height:30px; padding:4px 9px; }
 
-  aside#panel { width:244px; flex:none; background:var(--panel); border-left:1px solid var(--line);
-                overflow:auto; padding:10px; display:flex; flex-direction:column; gap:15px; }
-  aside#panel section { display:flex; flex-direction:column; gap:7px; }
-  aside#panel h3 { margin:0; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+  /* ---------------- panel: tabs, panes, sticky export footer ---------------- */
+  aside#panel { width:280px; flex:none; background:var(--panel); border-left:1px solid var(--line);
+                display:flex; flex-direction:column; overflow:hidden; }
+  #tabs { display:flex; gap:1px; padding:8px 8px 0; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .tab { padding:7px 10px; font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
+         background:none; border:1px solid transparent; border-bottom:none; border-radius:7px 7px 0 0;
+         cursor:pointer; white-space:nowrap; min-height:auto; }
+  .tab:hover { color:var(--fg); background:none; }
+  .tab.on { color:var(--fg); font-weight:700; border-color:var(--line); background:var(--panel);
+            position:relative; top:1px; }
+  .tab.on::after { content:""; position:absolute; left:8px; right:8px; bottom:-1px; height:2px;
+                   background:var(--accent); border-radius:2px; }
+  .pane { flex:1; min-height:0; overflow:auto; padding:12px; display:flex; flex-direction:column; gap:15px; }
+  .pane section { display:flex; flex-direction:column; gap:7px; }
+  #toolHint { color:var(--muted); font-size:12px; line-height:1.45; }
+
+  aside#panel h3 { margin:0; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted);
+                   font-weight:600; display:flex; align-items:center; justify-content:space-between; gap:6px; }
   aside#panel label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
   aside#panel input[type=range] { flex:1; min-width:0; accent-color:var(--accent); height:24px; }
   aside#panel input[type=color] { width:38px; height:26px; padding:0; border:1px solid var(--line); border-radius:4px; background:none; }
   aside#panel input[type=number], aside#panel input[type=text], aside#panel select {
-    font:inherit; color:var(--fg); background:#2c2d32; border:1px solid var(--line);
+    font:inherit; color:var(--fg); background:var(--field); border:1px solid var(--line);
     border-radius:6px; padding:6px 7px; width:100%; min-width:0;
   }
+  aside#panel select { width:auto; flex:1; }
+  input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; flex:none; margin:0; }
   .row { display:flex; gap:6px; }
   .row > * { flex:1; }
   output { color:var(--muted); width:28px; text-align:right; }
   .note { color:var(--muted); font-size:11px; line-height:1.35; }
+
+  /* the annotations tier sits at the top of the Layers pane, above the image layers */
+  #annSec { border:1px solid var(--line); border-radius:9px; padding:9px; background:var(--tier); }
+  #annBody { display:flex; flex-direction:column; gap:7px; }
+  #annList { display:flex; flex-direction:row; flex-wrap:wrap; gap:4px; }
+  #layersToggle, #annToggle { min-height:22px; padding:1px 7px; font-size:10px; }
+
+  #exportFooter { margin-top:auto; border-top:1px solid var(--line); background:var(--tier); padding:10px 12px;
+                  display:flex; flex-direction:column; }
+  #exportFooter section { display:flex; flex-direction:column; gap:8px; }
 
   #toast { position:fixed; left:50%; bottom:calc(22px + var(--safe-b)); transform:translateX(-50%);
            background:#111; color:#fff; border:1px solid var(--line); padding:8px 14px; border-radius:8px;
@@ -110,23 +147,18 @@
   .layerRow { display:flex; align-items:center; gap:7px; padding:4px 6px; border:1px solid transparent;
               border-radius:6px; cursor:pointer; font-size:12px; }
   .layerRow:hover { background:#2c2d32; }
-  .layerRow.active { border-color:var(--accent); background:#2b3550; }
+  .layerRow.active { border-color:var(--accent); background:#2d2716; }
   .layerRow.pinned { opacity:.65; cursor:default; }
   .layerRow img { width:36px; height:27px; object-fit:contain; flex:none; border-radius:3px;
                   background:repeating-conic-gradient(#2a2b2f 0% 25%, #26272b 0% 50%) 50%/8px 8px; }
-  .layerDot { width:8px; height:8px; border-radius:50%; background:var(--accent); flex:none; margin:0 14px; }
+  .layerDot { width:8px; height:8px; border-radius:50%; background:var(--accent-hi); flex:none; margin:0 14px; }
   .layerRow .lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #layerCount { color:var(--muted); font-size:11px; }
-  #layersSec h3, #annSec h3 { display:flex; align-items:center; justify-content:space-between; gap:6px; }
-  #layersToggle, #annToggle { min-height:22px; padding:1px 7px; font-size:10px; }
-  #layersBody { display:flex; flex-direction:column; gap:7px; }
-  #annBody { display:flex; flex-direction:column; gap:7px; }
-  #annList { display:flex; flex-direction:row; gap:4px; overflow-x:auto; padding-bottom:3px; }
   .annRow { display:flex; align-items:center; gap:5px; padding:3px 8px; border:1px solid var(--line);
             border-radius:13px; cursor:pointer; font-size:11px; white-space:nowrap; flex:none;
-            background:#2c2d32; touch-action:none; }
+            background:var(--btn); touch-action:none; }
   .annRow:hover { background:#34353b; }
-  .annRow.active { border-color:var(--accent); background:#2b3550; }
+  .annRow.active { border-color:var(--accent); background:#2d2716; }
   .annRow .sw { width:10px; height:10px; border-radius:50%; flex:none; border:1px solid #0008; }
   .annRow .lbl { overflow:hidden; text-overflow:ellipsis; }
 
@@ -137,16 +169,17 @@
                box-shadow:0 18px 50px #000b; }
   #dialogBox h3 { margin:0; font-size:14px; }
   #dialogBox label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-  #dialogBox input, #dialogBox select { font:inherit; color:var(--fg); background:#2c2d32;
+  #dialogBox input, #dialogBox select { font:inherit; color:var(--fg); background:var(--field);
                border:1px solid var(--line); border-radius:6px; padding:6px 7px; width:100%; min-width:0; }
 
   /* ---------------- mobile ---------------- */
   @media (max-width: 820px) {
     header#bar { padding:6px 8px; gap:6px; }
+    #annBar { padding:6px 8px; gap:6px; }
     #brand { padding-right:2px; }
     #brand span { display:none; }
-    #tools { width:100%; flex-wrap:nowrap; overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:2px; }
-    #actions { width:100%; flex-wrap:nowrap; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    #annLbl { display:none; }
+    #tools, #annTools { flex-wrap:nowrap; overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:2px; max-width:100%; }
     #bar .spacer { display:none; }
     button { min-height:40px; padding:9px 12px; }
     #sheetToggle { display:inline-flex; }
@@ -155,7 +188,7 @@
       position:fixed; left:0; right:0; bottom:0; top:auto; width:auto; height:auto;
       max-height:72vh; border-left:none; border-top:1px solid var(--line);
       border-radius:16px 16px 0 0; z-index:40;
-      padding-bottom:calc(14px + var(--safe-b));
+      padding-bottom:calc(6px + var(--safe-b));
       transform:translateY(calc(100% + 10px));
       transition:transform .22s ease;
       box-shadow:0 -10px 30px #0009;
@@ -186,6 +219,10 @@
   <button id="sheetToggle" class="primary">Controls</button>
   <input type="file" id="file" accept="image/*" hidden>
 </header>
+<div id="annBar">
+  <span id="annLbl">Annotate</span>
+  <div class="group" id="annTools"></div>
+</div>
 
 <main>
   <div id="stage">
@@ -206,154 +243,176 @@
   </div>
 
   <aside id="panel">
-    <section id="annSec">
-      <h3>Annotations <button id="annToggle" title="Hide / show">Show</button></h3>
-      <div id="annBody" hidden>
-        <div id="annList"></div>
-        <div class="row"><button id="annDel" class="danger" disabled>Delete</button></div>
-        <div class="note">Left to right is back to front (rightmost draws on top). Drag a chip to restack it. Ctrl-click toggles one, Shift-click picks a range — same as on the canvas.</div>
-      </div>
-    </section>
+    <div id="tabs">
+      <button class="tab on" data-tab="tool">Tool</button>
+      <button class="tab" data-tab="layers">Layers</button>
+      <button class="tab" data-tab="image">Image</button>
+    </div>
 
-    <section id="layersSec">
-      <h3>Layers <button id="layersToggle" title="Hide / show">Hide</button></h3>
-      <div id="layersBody">
-        <div id="layerList"></div>
-        <div id="layerCount">No layers yet</div>
-        <div class="row">
-          <button id="layFront">Front</button>
-          <button id="layUp">Up</button>
-          <button id="layDown">Down</button>
-          <button id="layBack">Back</button>
-        </div>
-        <div class="row">
-          <button id="layRotL">Rot L</button>
-          <button id="layRotR">Rot R</button>
-          <button id="layDel" class="danger">Delete</button>
-        </div>
-        <button id="layFlatten">Flatten ticked into background</button>
-        <div class="note">Ticked rows are drawn into the background in their current order (undo reverts it). Ctrl/Shift-click rows to select several, then drag them together in the canvas.</div>
-      </div>
-    </section>
+    <div class="pane" id="paneTool">
+      <div id="toolHint">Pick a drawing or effect tool to see its options here.</div>
 
-    <section id="styleSec">
-      <h3>Style</h3>
-      <label>Color <input type="color" id="color" value="#ff3b30"></label>
-      <label>Width <input type="range" id="width" min="1" max="80" value="6"><output id="widthOut">6</output></label>
-      <label>Opacity <input type="range" id="opacity" min="0.05" max="1" step="0.05" value="1"><output id="opacityOut">1</output></label>
-      <label>Fill <input type="checkbox" id="filled"></label>
-      <div id="fontRow">
-        <label>Font <select id="fontFamily"></select></label>
-        <label>Size
-          <input type="range" id="fontSize" min="8" max="1200" value="48">
-          <output id="fontSizeOut">48</output>
+      <section id="styleSec">
+        <h3>Style</h3>
+        <label>Color <input type="color" id="color" value="#ff3b30"></label>
+        <label>Width <input type="range" id="width" min="1" max="80" value="6"><output id="widthOut">6</output></label>
+        <label>Opacity <input type="range" id="opacity" min="0.05" max="1" step="0.05" value="1"><output id="opacityOut">1</output></label>
+        <label>Fill <input type="checkbox" id="filled"></label>
+        <div id="fontRow">
+          <label>Font <select id="fontFamily"></select></label>
+          <label>Size
+            <input type="range" id="fontSize" min="8" max="1200" value="48">
+            <output id="fontSizeOut">48</output>
+          </label>
+          <label>Exact <input type="number" id="fontSizeNum" min="1" max="6000" value="48"></label>
+          <div class="row">
+            <button id="boldBtn" title="Bold">Bold</button>
+            <button id="italicBtn" title="Italic">Italic</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="wandSec" hidden>
+        <h3>Magic wand</h3>
+        <label>Tolerance <input type="range" id="tolerance" min="0" max="100" value="22"><output id="toleranceOut">22</output></label>
+        <label>All similar <input type="checkbox" id="wandGlobal"></label>
+        <label>Transparent <input type="checkbox" id="wandTransparent" checked></label>
+        <div class="note">Tap an area to replace it. Transparent clears it to see-through; untick to fill it with the Color above. Raise tolerance to match more shades at once.</div>
+      </section>
+
+      <section id="cropSec" hidden>
+        <h3>Crop</h3>
+        <div class="row">
+          <button id="applyCropBtn" class="primary">Apply</button>
+          <button id="cancelCropBtn">Cancel</button>
+        </div>
+        <div class="note">Drag the handles to resize, drag inside to move.</div>
+      </section>
+
+      <section id="blobSec" hidden>
+        <h3>Blob distort</h3>
+        <label>Size <input type="range" id="blobSize" min="20" max="800" value="160"><output id="blobSizeOut">160</output></label>
+        <label>Force <input type="range" id="blobStrength" min="-90" max="90" value="60"></label>
+        <button id="blobClear">Clear distort blobs</button>
+        <div class="note">Tap to add a blob, drag it to move. Blobs bulge the picture <b>before</b> frying, and are applied to what frying targets (the selected layer, or the background). UI only, never drawn into the image.</div>
+      </section>
+    </div>
+
+    <div class="pane" id="paneLayers" hidden>
+      <section id="annSec">
+        <h3>Annotations <button id="annToggle" title="Hide / show">Hide</button></h3>
+        <div id="annBody">
+          <div id="annList"></div>
+          <label>Flatten into background <input type="checkbox" id="annFlatten"></label>
+          <div class="row"><button id="annDel" class="danger" disabled>Delete</button></div>
+          <div class="note">Left to right is back to front (rightmost draws on top). Drag a chip to restack it. Ctrl-click toggles one, Shift-click picks a range — same as on the canvas.</div>
+        </div>
+      </section>
+
+      <section id="layersSec">
+        <h3>Layers <button id="layersToggle" title="Hide / show">Hide</button></h3>
+        <div id="layersBody">
+          <div id="layerList"></div>
+          <div id="layerCount">No layers yet</div>
+          <div class="row">
+            <button id="layFront">Front</button>
+            <button id="layUp">Up</button>
+            <button id="layDown">Down</button>
+            <button id="layBack">Back</button>
+          </div>
+          <div class="row">
+            <button id="layRotL">Rot L</button>
+            <button id="layRotR">Rot R</button>
+            <button id="layDel" class="danger">Delete</button>
+          </div>
+          <button id="layFlatten">Flatten ticked into background</button>
+          <div class="note">Ticked rows are drawn into the background in their current order (undo reverts it). Ctrl/Shift-click rows to select several, then drag them together in the canvas.</div>
+        </div>
+      </section>
+
+      <section id="selSec">
+        <h3>Selection</h3>
+        <div class="row">
+          <button id="selAllBtn">Select all</button>
+          <button id="selClearBtn">Clear</button>
+        </div>
+        <div class="note" id="selInfo">Whole image</div>
+      </section>
+    </div>
+
+    <div class="pane" id="paneImage" hidden>
+      <section id="adjSec">
+        <h3>Adjust</h3>
+        <label>Bright <input type="range" id="brightness" min="0" max="200" value="100"></label>
+        <label>Contrast <input type="range" id="contrast" min="0" max="200" value="100"></label>
+        <label>Sat <input type="range" id="saturate" min="0" max="200" value="100"></label>
+        <label>Gray <input type="range" id="grayscale" min="0" max="100" value="0"></label>
+        <label>Sepia <input type="range" id="sepia" min="0" max="100" value="0"></label>
+        <div class="row">
+          <button id="applyAdj">Apply</button>
+          <button id="resetAdj">Reset</button>
+        </div>
+        <div class="note">Affects the final image, or just the selection if you have one. Apply bakes it in as its own layer.</div>
+      </section>
+
+      <section id="fxSec">
+        <h3>Effects</h3>
+        <label>Pixelate <input type="range" id="fxPixel" min="3" max="60" value="14"><output id="fxPixelOut">14</output></label>
+        <button id="fxPixelBtn">Pixelate</button>
+        <label>Blur <input type="range" id="fxBlur" min="1" max="30" value="8"><output id="fxBlurOut">8</output></label>
+        <button id="fxBlurBtn">Blur</button>
+        <div class="note">Works on what you see: the selection is flattened and the effect applied to it, then kept as its own layer. No selection = the whole picture. Ctrl+A selects all.</div>
+      </section>
+
+      <section id="bgSec">
+        <h3>Remove background</h3>
+        <input type="text" id="bgUrl" placeholder="http://nas:7000/api/remove" spellcheck="false">
+        <button id="bgBtn">Remove BG (server)</button>
+        <div class="note">Applies to the selected layer, or the background. Uses your rembg container; the Wand does it instantly on-device.</div>
+      </section>
+
+      <section id="sizeSec">
+        <h3>Resize</h3>
+        <label>Lock ratio <input type="checkbox" id="lockRatio" checked></label>
+        <div class="row">
+          <input type="number" id="rw" placeholder="width" min="1">
+          <input type="number" id="rh" placeholder="height" min="1">
+        </div>
+        <button id="applyResize">Resize</button>
+        <div class="note">Locked: the other side follows as you type. Unlocked: distort freely - every layer, annotation and text scales with it.</div>
+      </section>
+
+      <section id="funSec">
+        <h3>Fun</h3>
+        <label>Fry <select id="fryLevel">
+          <option value="light">Light</option>
+          <option value="medium">Medium</option>
+          <option value="deep" selected>Deep fried</option>
+          <option value="nuked">Nuked</option>
+        </select></label>
+        <button id="fryBtn">Deep fry</button>
+        <div class="note">Deep-fries whatever frying targets: the selected layer, or the background.</div>
+      </section>
+    </div>
+
+    <div id="exportFooter">
+      <section id="outSec">
+        <h3>Export</h3>
+        <label>Format
+          <select id="fmt">
+            <option value="image/png">PNG</option>
+            <option value="image/jpeg">JPEG</option>
+            <option value="image/webp">WebP</option>
+          </select>
         </label>
-        <label>Exact <input type="number" id="fontSizeNum" min="1" max="6000" value="48"></label>
+        <label id="qRow">Quality <input type="range" id="quality" min="0.1" max="1" step="0.05" value="0.92"></label>
+        <label>Name <input type="text" id="fname" value="image"></label>
         <div class="row">
-          <button id="boldBtn" title="Bold">Bold</button>
-          <button id="italicBtn" title="Italic">Italic</button>
+          <button id="copyBtn" class="primary">Copy</button>
+          <button id="dlBtn" class="primary">Download</button>
         </div>
-      </div>
-    </section>
-
-    <section id="wandSec" hidden>
-      <h3>Magic wand</h3>
-      <label>Tolerance <input type="range" id="tolerance" min="0" max="100" value="22"><output id="toleranceOut">22</output></label>
-      <label>All similar <input type="checkbox" id="wandGlobal"></label>
-      <label>Transparent <input type="checkbox" id="wandTransparent" checked></label>
-      <div class="note">Tap an area to replace it. Transparent clears it to see-through; untick to fill it with the Color above. Raise tolerance to match more shades at once.</div>
-    </section>
-
-    <section id="cropSec" hidden>
-      <h3>Crop</h3>
-      <div class="row">
-        <button id="applyCropBtn" class="primary">Apply</button>
-        <button id="cancelCropBtn">Cancel</button>
-      </div>
-      <div class="note">Drag the handles to resize, drag inside to move.</div>
-    </section>
-
-    <section id="selSec">
-      <h3>Selection</h3>
-      <div class="row">
-        <button id="selAllBtn">Select all</button>
-        <button id="selClearBtn">Clear</button>
-      </div>
-      <div class="note" id="selInfo">Whole image</div>
-    </section>
-
-    <section id="fxSec">
-      <h3>Effects</h3>
-      <label>Pixelate <input type="range" id="fxPixel" min="3" max="60" value="14"><output id="fxPixelOut">14</output></label>
-      <button id="fxPixelBtn">Pixelate</button>
-      <label>Blur <input type="range" id="fxBlur" min="1" max="30" value="8"><output id="fxBlurOut">8</output></label>
-      <button id="fxBlurBtn">Blur</button>
-      <div class="note">Works on what you see: the selection is flattened and the effect applied to it, then kept as its own layer. No selection = the whole picture. Ctrl+A selects all.</div>
-    </section>
-
-    <section id="adjSec">
-      <h3>Adjust</h3>
-      <label>Bright <input type="range" id="brightness" min="0" max="200" value="100"></label>
-      <label>Contrast <input type="range" id="contrast" min="0" max="200" value="100"></label>
-      <label>Sat <input type="range" id="saturate" min="0" max="200" value="100"></label>
-      <label>Gray <input type="range" id="grayscale" min="0" max="100" value="0"></label>
-      <label>Sepia <input type="range" id="sepia" min="0" max="100" value="0"></label>
-      <div class="row">
-        <button id="applyAdj">Apply</button>
-        <button id="resetAdj">Reset</button>
-      </div>
-      <div class="note">Affects the final image, or just the selection if you have one. Apply bakes it in as its own layer.</div>
-    </section>
-
-    <section id="funSec">
-      <h3>Fun</h3>
-      <label>Fry <select id="fryLevel">
-        <option value="light">Light</option>
-        <option value="medium">Medium</option>
-        <option value="deep" selected>Deep fried</option>
-        <option value="nuked">Nuked</option>
-      </select></label>
-      <button id="fryBtn">Deep fry</button>
-      <label>Blob size <input type="range" id="blobSize" min="20" max="800" value="160"><output id="blobSizeOut">160</output></label>
-      <label>Blob force <input type="range" id="blobStrength" min="-90" max="90" value="60"></label>
-      <button id="blobClear">Clear distort blobs</button>
-      <div class="note">With the Blob tool: tap to add, drag to move. They bulge the picture <b>before</b> frying - applied to what frying targets (the selected layer, or the background). UI only, never drawn into the image.</div>
-    </section>
-
-    <section id="bgSec">
-      <h3>Remove background</h3>
-      <input type="text" id="bgUrl" placeholder="http://nas:7000/api/remove" spellcheck="false">
-      <button id="bgBtn">Remove BG (server)</button>
-      <div class="note">Applies to the selected layer, or the background. Uses your rembg container; the Wand does it instantly on-device.</div>
-    </section>
-
-    <section id="sizeSec">
-      <h3>Resize</h3>
-      <label>Lock ratio <input type="checkbox" id="lockRatio" checked></label>
-      <div class="row">
-        <input type="number" id="rw" placeholder="width" min="1">
-        <input type="number" id="rh" placeholder="height" min="1">
-      </div>
-      <button id="applyResize">Resize</button>
-      <div class="note">Locked: the other side follows as you type. Unlocked: distort freely - every layer, annotation and text scales with it.</div>
-    </section>
-
-    <section id="outSec">
-      <h3>Export</h3>
-      <label>Format
-        <select id="fmt">
-          <option value="image/png">PNG</option>
-          <option value="image/jpeg">JPEG</option>
-          <option value="image/webp">WebP</option>
-        </select>
-      </label>
-      <label id="qRow">Quality <input type="range" id="quality" min="0.1" max="1" step="0.05" value="0.92"></label>
-      <label>Name <input type="text" id="fname" value="image"></label>
-      <div class="row">
-        <button id="copyBtn" class="primary">Copy</button>
-        <button id="dlBtn" class="primary">Download</button>
-      </div>
-    </section>
+      </section>
+    </div>
   </aside>
 </main>
 
@@ -431,11 +490,33 @@ const FONT_CHOICES = [
   ['Caveat',           'Handwritten (Caveat)'],
 ];
 
+// [id, label, shortcut, row] — row 'top' is the global tool row, 'ann' the annotation row.
 const TOOLS = [
-  ['move','Move','m'], ['marquee','Select','s'], ['text','Text','t'], ['brush','Pen','p'], ['highlight','Highlight','h'],
-  ['line','Line','l'], ['arrow','Arrow','a'], ['rect','Rect','r'], ['ellipse','Ellipse','e'],
-  ['wand','Wand','w'], ['crop','Crop','c'], ['blob','Blob','b'],
+  ['move','Move','m','top'], ['marquee','Select','s','top'],
+  ['wand','Wand','w','top'], ['crop','Crop','c','top'], ['blob','Blob','b','top'],
+  ['text','Text','t','ann'], ['brush','Pen','p','ann'], ['highlight','Highlight','h','ann'],
+  ['line','Line','l','ann'], ['arrow','Arrow','a','ann'], ['rect','Rect','r','ann'], ['ellipse','Ellipse','e','ann'],
 ];
+const TOOL_ROW_SEP = new Set(['wand', 'line']);    // draw a divider before these tools
+const TOOL_ICONS = {
+  move:'<path d="M12 3v18M3 12h18M12 3l-2.4 2.4M12 3l2.4 2.4M12 21l-2.4-2.4M12 21l2.4-2.4M3 12l2.4-2.4M3 12l2.4 2.4M21 12l-2.4-2.4M21 12l-2.4 2.4"/>',
+  marquee:'<rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="3 3"/>',
+  text:'<path d="M5 7V5h14v2"/><path d="M12 5v14"/><path d="M9 19h6"/>',
+  brush:'<path d="M4 20l1.2-4.2L16.4 4.6a1.6 1.6 0 012.3 0l.7.7a1.6 1.6 0 010 2.3L8.2 18.8 4 20z"/>',
+  highlight:'<path d="M13 4l6 6-6.4 6.4-6-6z"/><path d="M9.6 15.4l-2 2"/><path d="M4 21h9"/>',
+  line:'<path d="M5 19L19 5"/>',
+  arrow:'<path d="M5 19L19 5"/><path d="M12.5 5H19v6.5"/>',
+  rect:'<rect x="4" y="5" width="16" height="14" rx="1.5"/>',
+  ellipse:'<ellipse cx="12" cy="12" rx="8" ry="6.4"/>',
+  wand:'<path d="M5 19l9-9"/><path d="M14.5 4.2l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7z"/><path d="M19.5 12.5l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5z"/>',
+  crop:'<path d="M7 3v14h14"/><path d="M3 7h14v14"/>',
+  blob:'<path d="M12 3s6 6.4 6 11a6 6 0 01-12 0c0-4.6 6-11 6-11z"/>',
+};
+const toolIcon = id => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '
+  + 'stroke-linecap="round" stroke-linejoin="round">' + (TOOL_ICONS[id] || '') + '</svg>';
+// Which Tool-tab section a tool owns (undefined = no options, e.g. Select).
+const TOOL_OPTS = { move:'style', text:'style', brush:'style', highlight:'style', line:'style',
+  arrow:'style', rect:'style', ellipse:'style', wand:'wand', crop:'crop', blob:'blob' };
 const TOOL_KEYS = {};            // single-letter shortcut -> tool id, filled in by buildToolButtons()
 
 const FRY = {
@@ -449,7 +530,7 @@ const FRY = {
 const $ = s => document.querySelector(s);
 const view = $('#view'), vctx = view.getContext('2d'), stage = $('#stage');
 const panel = $('#panel'), backdrop = $('#backdrop');
-const toolsEl = $('#tools'), fontSel = $('#fontFamily'), layerList = $('#layerList');
+const toolsEl = $('#tools'), annToolsEl = $('#annTools'), fontSel = $('#fontFamily'), layerList = $('#layerList');
 const chromeCanvas = $('#chrome'), cctx = chromeCanvas.getContext('2d');
 const zoomHud = $('#zoomHud'), zoomPct = $('#zoomPct');
 
@@ -1186,14 +1267,30 @@ function renderChrome() {
 }
 
 /* -------------------------------------------------------------- 8  pointer */
+const PANES = { tool:'#paneTool', layers:'#paneLayers', image:'#paneImage' };
+function setTab(name) {
+  if (!PANES[name]) name = 'tool';
+  $('#tabs').querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
+  for (const k in PANES) $(PANES[k]).hidden = k !== name;
+}
+function syncToolButtons(id) {
+  document.querySelectorAll('#tools [data-tool], #annTools [data-tool]')
+    .forEach(b => b.classList.toggle('active', b.dataset.tool === id));
+}
 function setTool(id) {
   if (tool === 'crop' && id !== 'crop') cancelCrop();
   tool = id;
-  [...toolsEl.children].forEach(b => b.classList.toggle('active', b.dataset.tool === id));
+  syncToolButtons(id);
   applyCursor();
+  // The Tool tab shows exactly one tool's options — pick the section that belongs to this tool.
+  const opts = TOOL_OPTS[id] || null;
+  $('#styleSec').hidden = opts !== 'style';
+  $('#wandSec').hidden  = opts !== 'wand';
+  $('#blobSec').hidden  = opts !== 'blob';
+  $('#cropSec').hidden  = !crop;
   $('#fontRow').style.display = (id === 'text' || id === 'move') ? '' : 'none';
-  $('#wandSec').hidden = id !== 'wand';
-  $('#cropSec').hidden = !crop;
+  $('#toolHint').hidden = !!(opts || crop);
+  if (id !== 'move' && id !== 'marquee') setTab('tool');   // land on the tool's own options
   if (id === 'highlight' && $('#opacity').value === '1') setRange('opacity', 0.4);
   if (id !== 'move' && id !== 'text') { selText = null; clearShapeSel(); }
   else if (id === 'text') clearShapeSel();          // text tool: keep the text box, drop annotations
@@ -1862,11 +1959,6 @@ function updateLayerUI() {
     if (opts.onclick) row.onclick = opts.onclick;
     layerList.appendChild(row);
   };
-  addRow('Annotations (top)', null, {
-    tick: () => flattenAnnotations,
-    onTick: v => { flattenAnnotations = v; },
-    onclick: e => { selText = null; clearShapeSel(); updateSelBar(); render(); }
-  });
   for (let i = layers.length - 1; i >= 0; i--) {
     const l = layers[i];
     addRow('Layer ' + (i + 1), makeThumb(l.c), {
@@ -1897,7 +1989,8 @@ function updateLayerUI() {
   $('#layBack').disabled  = !has || i === 0;
   $('#layRotL').disabled = !has; $('#layRotR').disabled = !has;
   $('#layDel').disabled = movingIds().length === 0;
-  $('#layFlatten').disabled = checkedLayers.size === 0 && !flattenAnnotations;
+  $('#annFlatten').checked = flattenAnnotations;
+  $('#layFlatten').disabled = checkedLayers.size === 0;
   $('#layerCount').textContent = layers.length
     ? layers.length + (layers.length === 1 ? ' layer' : ' layers')
     : 'No layers yet';
@@ -2722,6 +2815,10 @@ function wire() {
   $('#rh').addEventListener('input', () => syncRatio('h'));
   $('#lockRatio').addEventListener('change', () => { if ($('#lockRatio').checked) syncRatio('w'); });
 
+  // sidebar tabs + the annotations-tier flatten tick
+  $('#tabs').querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setTab(t.dataset.tab)));
+  $('#annFlatten').addEventListener('change', () => { flattenAnnotations = $('#annFlatten').checked; updateLayerUI(); });
+
   // mobile sheet
   $('#sheetToggle').onclick = () => toggleSheet(!panel.classList.contains('open'));
   backdrop.onclick = () => toggleSheet(false);
@@ -2768,11 +2865,18 @@ function wire() {
 
 /* ---------------------------------------------------------------- 19  boot */
 function buildToolButtons() {
-  for (const [id, label, key] of TOOLS) {
+  for (const [id, label, key, row] of TOOLS) {
+    const host = row === 'ann' ? annToolsEl : toolsEl;
+    if (TOOL_ROW_SEP.has(id)) {
+      const sep = document.createElement('span'); sep.className = 'gsep'; host.appendChild(sep);
+    }
     const b = document.createElement('button');
-    b.textContent = label; b.dataset.tool = id; b.title = label + ' (' + key.toUpperCase() + ')';
+    b.type = 'button'; b.dataset.tool = id;
+    b.title = label + ' (' + key.toUpperCase() + ')';
+    const rest = label[0].toLowerCase() === key ? label.slice(1) : label;   // every hotkey is the first letter
+    b.innerHTML = toolIcon(id) + '<span class="k">[' + key + ']</span>' + rest;
     b.addEventListener('click', () => setTool(id));
-    toolsEl.appendChild(b);
+    host.appendChild(b);
     TOOL_KEYS[key] = id;
   }
 }
