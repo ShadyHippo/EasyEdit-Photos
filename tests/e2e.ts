@@ -700,12 +700,19 @@ async function main() {
     for (const type of ["keyDown", "keyUp"])
       await send("Input.dispatchKeyEvent", { type, key: k, code, modifiers: mods, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
   };
+  // Poll page state instead of sleeping a fixed time, so async work (clipboard reads,
+  // image decoding) can never race the assertion.
+  const waitFor = async (expr: string, ms = 8000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) { if (await evaluate(expr)) return true; await sleep(100); }
+    return false;
+  };
   await evaluate(`clearEverything()`);
   await evaluate(`(async()=>{const b=Uint8Array.from(atob(window.__small),c=>c.charCodeAt(0));
     await navigator.clipboard.write([new ClipboardItem({'image/png':new Blob([b],{type:'image/png'})})]);
     return 1;})()`, true);
   await pressKey("v", "KeyV", 86);
-  await sleep(900);
+  await waitFor(`hasImage === true && view.width === 300`);
   const nat1 = await evaluate(`({w:view.width, has:hasImage, layers:layers.length})`);
   check("Ctrl+V pastes an image from the system clipboard", nat1.w === 300 && nat1.has === true, nat1);
 
@@ -713,16 +720,16 @@ async function main() {
     await navigator.clipboard.write([new ClipboardItem({'image/png':new Blob([b],{type:'image/png'})})]);
     return 1;})()`, true);
   await pressKey("v", "KeyV", 86);
-  await sleep(900);
+  await waitFor(`layers.length === 1`);
   const nat2 = await evaluate(`({w:view.width, layers:layers.length})`);
   check("Ctrl+V pastes a second image as a layer", nat2.layers === 1 && nat2.w === 300, nat2);
 
   // internal buffer: no image on the system clipboard -> Ctrl+V must fall back to our copy
-  await evaluate(`setSelection([layers[0].id]); copySel();`);
+  await evaluate(`setSelection([layers[0].id]); copySel();`, true);   // let the OS write settle first
   await evaluate(`navigator.clipboard.writeText('not an image')`);
   const nBeforeClip = await evaluate(`layers.length`);
   await pressKey("v", "KeyV", 86);
-  await sleep(700);
+  await waitFor(`layers.length === ${nBeforeClip + 1}`);
   const fallback = await evaluate(`layers.length`);
   check("Ctrl+V falls back to the internal copy when the clipboard has no image", fallback === nBeforeClip + 1, { before: nBeforeClip, after: fallback });
 
@@ -764,10 +771,11 @@ async function main() {
 
   const srcPos = await evaluate(`({x:Math.round(primaryLayer().x),y:Math.round(primaryLayer().y),w:Math.round(primaryLayer().w),n:layers.length})`);
   await pressKey("c", "KeyC", 67);
-  // the mirror is async; poll until it lands rather than racing it
-  let mirror: any = null;
-  for (let i = 0; i < 30; i++) {
-    mirror = await evaluate(`(async()=>{
+  // Await the app's own mirror promise before reading. Reading while the write is still
+  // in flight makes headless Chromium invalidate the clipboard ("Clipboard data has
+  // changed") and the later paste event then sees stale data - a hard-to-see flake.
+  await evaluate(`clipMirror`, true);
+  const mirror = await evaluate(`(async()=>{
       try {
         const items = await navigator.clipboard.read();
         for (const it of items) {
@@ -778,13 +786,10 @@ async function main() {
         return 'no image';
       } catch (e) { return 'err:' + e.message; }
     })()`, true);
-    if (mirror && mirror.sig === mirror.clipSig) break;
-    await sleep(150);
-  }
   check("Ctrl+C mirrors the copy onto the system clipboard", !!mirror && mirror.sig === mirror.clipSig, mirror);
 
   await pressKey("v", "KeyV", 86);
-  await sleep(900);
+  await waitFor(`layers.length === ${srcPos.n + 1}`);
   const wfAfter = await evaluate(`(function(){const l=layers[layers.length-1];
      return {n:layers.length, x:Math.round(l.x), y:Math.round(l.y), w:Math.round(l.w)};})()`);
   check("Ctrl+C then Ctrl+V duplicates the clicked layer beside it",

@@ -351,13 +351,43 @@
 
 <script>
 "use strict";
-const $ = s => document.querySelector(s);
-const view = $('#view'), vctx = view.getContext('2d'), stage = $('#stage');
 
+/* ============================================================================
+ * Easy Edit — a single-file image annotator / light editor.
+ *
+ * Reading order:
+ *    1  config      constants and tunables
+ *    2  dom         cached element references
+ *    3  state       every mutable module variable, in one place
+ *    4  util        tiny pure helpers
+ *    5  history     copy-on-write undo / redo (see the note below)
+ *    6  model       layer + selection bookkeeping
+ *    7  render      everything that paints the view canvas
+ *    8  pointer     the active-tool state machine and pointer handling
+ *    9  text        text boxes, inline editing, the floating selection bar
+ *   10  selection   marquee, effects, magic wand, flatten
+ *   11  layers      the layers panel and its operations
+ *   12  crop        interactive crop
+ *   13  transform   rotate / flip / resize / bake annotations
+ *   14  fun         deep fry and the distort blobs
+ *   15  bg          server-side background removal
+ *   16  export      composite + download / copy
+ *   17  document    open, new, reset, clear
+ *   18  wiring      every event listener, in one place
+ *   19  boot        first paint
+ * ========================================================================== */
+
+/* -------------------------------------------------------------- 1  config */
 const MAX_UNDO = 12;
-const HANDLE_PX = 26;            // crop handle hit size, in screen px (finger friendly)
+// Retained pixel history is capped by bytes, not just by step count: one 4K
+// canvas is ~33 MB, so twelve untouched copies would be ~400 MB. Dropping whole
+// old steps once the budget is blown keeps this usable on modest hardware, and
+// it only ever costs history depth, never correctness.
+const MAX_HISTORY_BYTES = 384 << 20;
+const HANDLE_PX = 26;            // crop / layer handle hit size, in screen px
 const DEFAULT_FILTER = { brightness:100, contrast:100, saturate:100, grayscale:0, sepia:0 };
-// Bundled faces only - see fonts/LICENSE.txt. Nothing here relies on the host machine.
+
+// Bundled faces only (see fonts/LICENSE.txt) — nothing relies on the host machine.
 const FONT_CHOICES = [
   ['Anton',            'Heavy (Anton)'],
   ['Inter',            'Clean (Inter)'],
@@ -366,71 +396,210 @@ const FONT_CHOICES = [
   ['Caveat',           'Handwritten (Caveat)'],
 ];
 
-let base = document.createElement('canvas');        // the background (bottom of the stack)
-let bctx = base.getContext('2d');
-let overlay = document.createElement('canvas');      // annotations; always above every layer
-let octx = overlay.getContext('2d');
-let layers = [];                                      // pasted images; index 0 = back, last = front
-let selLayer = null;                                  // primary (last-clicked) layer id
-let selLayers = [];                                   // full multi-selection
-let checkedLayers = new Set();                        // ticked rows, for Flatten
-let flattenAnnotations = false;
-let clip = null;                                      // internal copy/paste buffer
-let clipSig = null;                                   // pixel fingerprint of the copy we mirrored to the OS clipboard
-let original = null, hasImage = false;
-
-let texts = [];                  // live, movable text boxes
-let selText = null;              // selected text id
-let undoStack = [], redoStack = [];
-let gestureSnap = null;
-
-let tool = 'move';
-let drag = null;                 // {kind:'shape'|'text'|'marquee', ...}
-let crop = null;                 // {x,y,w,h} in canvas coords
-let cropDrag = null;
-let selection = null;            // {x,y,w,h}; effects target this, else the whole image
-
-let adjust = { ...DEFAULT_FILTER };
-const style = { color:'#ff3b30', width:6, opacity:1, filled:false, fontSize:48, family:'Anton', bold:false, italic:false };
-const wand = { tolerance:22, global:false };
-const fx = { block:14, soft:8 };   // pixelate block size, blur radius
-const blobCfg = { size:160, strength:60 };
-let blobs = [];                  // distort markers: UI only, never exported
-let hoverId = null;              // layer under the cursor (desktop hover feedback)
-let aspect = 1;                  // base.width / base.height, for the locked resize
-
-const uid = () => Math.random().toString(36).slice(2, 9);
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const canvas = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
-const clone = src => { const c = canvas(src.width, src.height); c.getContext('2d').drawImage(src, 0, 0); return c; };
-
-/* ============================ tools ============================ */
 const TOOLS = [
   ['move','Move'], ['marquee','Select'], ['text','Text'], ['brush','Pen'], ['highlight','Highlight'],
   ['line','Line'], ['arrow','Arrow'], ['rect','Rect'], ['ellipse','Ellipse'],
   ['wand','Wand'], ['crop','Crop'], ['blob','Blob'],
 ];
-const toolsEl = $('#tools');
-for (const [id, label] of TOOLS) {
-  const b = document.createElement('button');
-  b.textContent = label; b.dataset.tool = id; b.title = label;
-  b.addEventListener('click', () => setTool(id));
-  toolsEl.appendChild(b);
-}
-function setTool(id) {
-  if (tool === 'crop' && id !== 'crop') cancelCrop();
-  tool = id;
-  [...toolsEl.children].forEach(b => b.classList.toggle('active', b.dataset.tool === id));
-  view.style.cursor = id === 'text' ? 'text' : ((id === 'move' || id === 'marquee') ? 'default' : 'crosshair');
-  $('#fontRow').style.display = (id === 'text' || id === 'move') ? '' : 'none';
-  $('#wandSec').hidden = id !== 'wand';
-  $('#cropSec').hidden = !crop;
-  if (id === 'highlight' && $('#opacity').value === '1') setRange('opacity', 0.4);
-  if (id !== 'move' && id !== 'text') { selText = null; updateSelBar(); }
-  render();
+
+const FRY = {
+  light:  { q:72, passes:1, sat:2.2, con:1.25, nz:10, sh:0.55 },
+  medium: { q:48, passes:2, sat:3.2, con:1.45, nz:16, sh:0.85 },
+  deep:   { q:32, passes:3, sat:4.5, con:1.70, nz:24, sh:1.15 },
+  nuked:  { q:16, passes:5, sat:6.0, con:2.10, nz:38, sh:1.55 },
+};
+
+/* ----------------------------------------------------------------- 2  dom */
+const $ = s => document.querySelector(s);
+const view = $('#view'), vctx = view.getContext('2d'), stage = $('#stage');
+const panel = $('#panel'), backdrop = $('#backdrop');
+const toolsEl = $('#tools'), fontSel = $('#fontFamily'), layerList = $('#layerList');
+
+/* --------------------------------------------------------------- 3  state */
+// Pixel surfaces: `base` is the background, `overlay` holds shapes (always above
+// every layer) and each layer owns its own canvas. §5 explains how these are
+// shared with history so that undo does not copy the whole document every time.
+let base = document.createElement('canvas');
+let bctx = base.getContext('2d');
+let overlay = document.createElement('canvas');
+let octx = overlay.getContext('2d');
+let hasImage = false;
+
+let layers = [];                 // index 0 = back, last = front
+let selLayer = null;             // primary (last-clicked) layer id
+let selLayers = [];              // full multi-selection
+let checkedLayers = new Set();   // ticked rows, for Flatten
+let flattenAnnotations = false;
+
+let texts = [];                  // live, movable text boxes
+let selText = null;
+
+let blobs = [];                  // distort markers: UI only, never exported
+const style = { color:'#ff3b30', width:6, opacity:1, filled:false, fontSize:48, family:'Anton', bold:false, italic:false };
+const wand = { tolerance:22, global:false };
+const fx = { block:14, soft:8 };     // pixelate block size, blur radius
+const blobCfg = { size:160, strength:60 };
+let adjust = { ...DEFAULT_FILTER };
+
+let clip = null;                 // internal copy/paste buffer
+let clipSig = null;              // pixel fingerprint of what we mirrored to the OS clipboard
+let clipMirror = Promise.resolve();  // in-flight OS clipboard write; awaitable, never raced
+let pasteStamp = 0;
+
+let tool = 'move';
+let drag = null;                 // {kind:'shape'|'text'|'marquee'|'layer'|'layerResize'|'blob', ...}
+let crop = null;                 // {x,y,w,h} in canvas coords
+let cropDrag = null;
+let selection = null;            // {x,y,w,h}; effects target this, else the whole image
+let hoverId = null;              // layer under the cursor (desktop hover feedback)
+let aspect = 1;                  // base.width / base.height, for the locked resize
+
+let undoStack = [], redoStack = [], gestureSnap = null;
+let nudgeTimer = null, toastTimer = null;
+
+/* ---------------------------------------------------------------- 4  util */
+const uid = () => Math.random().toString(36).slice(2, 9);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const canvas = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+const clone = src => { const c = canvas(src.width, src.height); c.getContext('2d').drawImage(src, 0, 0); return c; };
+const textLines = t => String(t.text).split('\n');
+const isImg = f => !!(f && f.type && f.type.startsWith('image/'));
+
+function toast(msg) {
+  const el = $('#toast'); el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2000);
 }
 
-/* ============================ rendering ============================ */
+/* ------------------------------------------------------------- 5  history */
+/* A snapshot keeps *references* to the pixel canvases and copies only the small
+ * metadata (layer rects, texts, blobs, selection). Before a canvas is edited in
+ * place it is cloned if any snapshot still points at it (copy-on-write), and
+ * released once nothing needs it. So one operation costs at most one canvas copy
+ * — never a copy of the whole document — while undo still restores exact pixels.
+ *
+ * `pinned` maps a canvas to the number of history entries holding it. Only four
+ * places ever write into a canvas in place (two of them the overlay) and each
+ * calls the matching own*() first; everything else builds a fresh canvas, which
+ * is safe to hand to history as-is.
+ */
+const pinned = new Map();        // canvas -> reference count
+let pinnedBytes = 0;             // total bytes currently held by history
+const canvasBytes = c => c.width * c.height * 4;
+
+function pin(c) {
+  const n = pinned.get(c) || 0;
+  if (!n) pinnedBytes += canvasBytes(c);
+  pinned.set(c, n + 1);
+}
+function unpin(c) {
+  const n = pinned.get(c);
+  if (!n) return;
+  if (n === 1) { pinned.delete(c); pinnedBytes -= canvasBytes(c); }
+  else pinned.set(c, n - 1);
+}
+const frozen = c => pinned.has(c);
+
+function snapshot() {
+  const ls = layers.map(l => ({ ...l }));
+  const s = {
+    base, overlay,
+    layers: ls,
+    texts: texts.map(t => ({ ...t })),
+    blobs: blobs.map(b => ({ ...b })),
+    sel: selText, selLayer, selLayers: [...selLayers],
+  };
+  s.surfaces = [...new Set([base, overlay, ...ls.map(l => l.c)])];
+  s.surfaces.forEach(pin);
+  return s;
+}
+function drop(s) {
+  if (!s || !s.surfaces) return;
+  s.surfaces.forEach(unpin);
+  s.surfaces = null;
+}
+function dropStack(stack) { for (const s of stack) drop(s); stack.length = 0; }
+
+function trimHistory() {
+  while (undoStack.length > MAX_UNDO) drop(undoStack.shift());
+  while (pinnedBytes > MAX_HISTORY_BYTES && undoStack.length > 1) drop(undoStack.shift());
+}
+// Commit a snapshot that was taken *before* a change.
+function commitPre(pre) {
+  dropStack(redoStack);                  // a fresh edit invalidates the redo trail
+  undoStack.push(pre);
+  trimHistory();
+  updateHistoryUI();
+}
+// Snapshot the current state now, for operations that mutate straight away.
+function pushUndo() { commitPre(snapshot()); }
+
+function beginGesture() {
+  if (gestureSnap) drop(gestureSnap);    // a previous gesture that never committed
+  gestureSnap = snapshot();
+}
+function commitGesture(changed) {
+  const s = gestureSnap; gestureSnap = null;
+  if (changed && s) commitPre(s); else drop(s);
+}
+
+function restore(s) {
+  base = s.base; bctx = base.getContext('2d');
+  overlay = s.overlay; octx = overlay.getContext('2d');
+  layers = s.layers.map(l => ({ ...l }));
+  texts = s.texts.map(t => ({ ...t }));
+  blobs = (s.blobs || []).map(b => ({ ...b }));
+  selText = s.sel; selLayer = s.selLayer; selLayers = s.selLayers ? [...s.selLayers] : [];
+  resizeView(); render(); updateHistoryUI(); updateSelInfo(); updateLayerUI();
+}
+function undo() {
+  if (!undoStack.length) return;
+  const s = undoStack.pop();
+  redoStack.push(snapshot());
+  while (redoStack.length > MAX_UNDO) drop(redoStack.shift());
+  restore(s); drop(s);
+}
+function redo() {
+  if (!redoStack.length) return;
+  const s = redoStack.pop();
+  undoStack.push(snapshot());
+  trimHistory();
+  restore(s); drop(s);
+}
+function updateHistoryUI() {
+  $('#undoBtn').disabled = !undoStack.length;
+  $('#redoBtn').disabled = !redoStack.length;
+}
+
+// Copy-on-write: adopt a private canvas before editing one that history holds.
+function ownBase()    { if (frozen(base))    { base = clone(base);       bctx = base.getContext('2d'); } }
+function ownOverlay() { if (frozen(overlay)) { overlay = clone(overlay); octx = overlay.getContext('2d'); } }
+function ownLayer(l)  { if (frozen(l.c))     { l.c = clone(l.c); } }
+
+/* --------------------------------------------------------------- 6  model */
+function primaryLayer() { return layers.find(l => l.id === selLayer) || null; }
+
+function selectedLayerSet() {
+  const ids = selLayers.length ? selLayers : (selLayer ? [selLayer] : []);
+  return ids.map(id => layers.find(l => l.id === id)).filter(Boolean);
+}
+function movingIds() {
+  const ids = (selLayers && selLayers.includes(selLayer)) ? selLayers : (selLayer ? [selLayer] : []);
+  return ids.filter(id => layers.some(l => l.id === id));
+}
+function setSelection(ids) {
+  const seen = [];
+  for (const id of ids) if (layers.some(l => l.id === id) && !seen.includes(id)) seen.push(id);
+  selLayers = seen;
+  selLayer = seen.length ? seen[seen.length - 1] : null;
+  if (selLayer) selText = null;
+  updateLayerUI();
+}
+
+/* -------------------------------------------------------------- 7  render */
+const viewScale = () => {
+  const r = view.getBoundingClientRect();
+  return view.width ? r.width / view.width : 1;
+};
 function filterCSS() {
   const a = adjust, p = [];
   if (a.brightness !== 100) p.push(`brightness(${a.brightness}%)`);
@@ -440,8 +609,7 @@ function filterCSS() {
   if (a.sepia)              p.push(`sepia(${a.sepia}%)`);
   return p.length ? p.join(' ') : 'none';
 }
-const textLines = t => String(t.text).split('\n');
-// one place that builds the font shorthand, so canvas, bbox and the editor agree
+// One place that builds the font shorthand, so canvas, bbox and the editor agree.
 function fontCss(t, scale = 1) {
   return `${t.italic ? 'italic ' : ''}${t.bold ? 'bold ' : ''}${Math.round(t.size * scale)}px "${t.family}", sans-serif`;
 }
@@ -471,48 +639,6 @@ function drawSelection(t) {
   vctx.strokeRect(t.x - 4 / s, t.y - 4 / s, b.w + 8 / s, b.h + 8 / s);
   vctx.restore();
 }
-const viewScale = () => {
-  const r = view.getBoundingClientRect();
-  return view.width ? r.width / view.width : 1;
-};
-
-function drawStack(ctx) {
-  ctx.drawImage(base, 0, 0);
-  for (const l of layers) ctx.drawImage(l.c, l.x, l.y, l.w, l.h);
-  ctx.drawImage(overlay, 0, 0);
-  for (const t of texts) paintText(ctx, t);
-}
-function render() {
-  if (!hasImage) return;
-  vctx.setTransform(1, 0, 0, 1, 0, 0);
-  vctx.filter = 'none';
-  vctx.clearRect(0, 0, view.width, view.height);
-  drawStack(vctx);
-  // Adjust now applies to the FINAL image, or only inside the selection if there is one.
-  const f = filterCSS();
-  if (f !== 'none') {
-    vctx.save();
-    if (selection) { vctx.beginPath(); vctx.rect(selection.x, selection.y, selection.w, selection.h); vctx.clip(); }
-    vctx.filter = f;
-    drawStack(vctx);
-    vctx.restore();
-    vctx.filter = 'none';
-  }
-  const sel = texts.find(t => t.id === selText);
-  if (sel) drawSelection(sel);
-  for (const l of selectedLayerSet()) drawLayerOutline(l, l.id === selLayer);
-  if (tool === 'move' && hoverId && !selLayers.includes(hoverId)) {
-    const hl = layers.find(l => l.id === hoverId);
-    if (hl) drawHoverOutline(hl);
-  }
-  if (drag && drag.shape) paintShape(vctx, drag.shape);
-  if (crop) drawCropOverlay();
-  else if (drag && drag.kind === 'marquee') drawSelectionOverlay(marqueeRect(drag));
-  else if (selection) drawSelectionOverlay(selection);
-  for (const b of blobs) drawBlob(b);        // UI only, above everything
-  updateSelBar();
-}
-
 function paintShape(ctx, s) {
   ctx.save();
   ctx.globalAlpha = s.opacity;
@@ -542,179 +668,11 @@ function paintShape(ctx, s) {
   }
   ctx.restore();
 }
-
-/* ============================ history ============================ */
-function syncOverlaySize() {
-  if (overlay.width !== base.width || overlay.height !== base.height) {
-    const t = canvas(base.width, base.height);
-    t.getContext('2d').drawImage(overlay, 0, 0);
-    overlay = t; octx = overlay.getContext('2d');
-  }
-}
-function snapshot() {
-  return { base: clone(base), overlay: clone(overlay),
-           layers: layers.map(l => ({ ...l, c: clone(l.c) })),
-           texts: texts.map(t => ({ ...t })), blobs: blobs.map(b => ({ ...b })),
-           sel: selText, selLayer, selLayers: [...selLayers] };
-}
-function restore(s) {
-  base = s.base; bctx = base.getContext('2d');
-  overlay = s.overlay; octx = overlay.getContext('2d');
-  layers = s.layers.map(l => ({ ...l, c: clone(l.c) }));
-  texts = s.texts.map(t => ({ ...t }));
-  blobs = (s.blobs || []).map(b => ({ ...b }));
-  selText = s.sel; selLayer = s.selLayer; selLayers = s.selLayers ? [...s.selLayers] : [];
-  resizeView(); render(); updateHistoryUI(); updateSelInfo(); updateLayerUI();
-}
-function commitPre(pre) {
-  undoStack.push(pre);
-  if (undoStack.length > MAX_UNDO) undoStack.shift();
-  redoStack.length = 0; updateHistoryUI();
-}
-function pushUndo() {
-  undoStack.push(snapshot());
-  if (undoStack.length > MAX_UNDO) undoStack.shift();
-  redoStack.length = 0; updateHistoryUI();
-}
-function beginGesture() { gestureSnap = snapshot(); }
-function commitGesture(changed) {
-  if (changed && gestureSnap) {
-    undoStack.push(gestureSnap);
-    if (undoStack.length > MAX_UNDO) undoStack.shift();
-    redoStack.length = 0; updateHistoryUI();
-  }
-  gestureSnap = null;
-}
-function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); }
-function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); }
-function updateHistoryUI() { $('#undoBtn').disabled = !undoStack.length; $('#redoBtn').disabled = !redoStack.length; }
-
-/* ============================ canvas + layers ============================ */
-function resizeView() {
-  view.width = base.width; view.height = base.height;
-  view.style.display = 'block';
-  $('#hint').style.display = 'none';
-  $('#rw').value = base.width; $('#rh').value = base.height;
-  aspect = base.width / base.height;
-  syncOverlaySize();
-}
-function setBase(c) {
-  base = c; bctx = base.getContext('2d');
-  selection = null; updateSelInfo();     // geometry changed, so any marquee is stale
-  resizeView(); render();
-}
-function resetStack(c) {
-  hasImage = true;
-  undoStack = []; redoStack = []; gestureSnap = null;
-  texts = []; selText = null; crop = null; cropDrag = null; selection = null;
-  layers = []; selLayer = null; selLayers = [];
-  checkedLayers = new Set(); flattenAnnotations = false; clip = null; clipSig = null;
-  adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
-  base = c; bctx = c.getContext('2d');
-  overlay = canvas(c.width, c.height); octx = overlay.getContext('2d');
-  original = clone(c);
-  resizeView(); render();
-  updateHistoryUI(); updateSelInfo(); updateLayerUI(); setTool('move');
-}
-function makeThumb(src) {
-  const t = canvas(36, 27), x = t.getContext('2d');
-  const k = Math.min(36 / src.width, 27 / src.height);
-  const w = Math.max(1, src.width * k), h = Math.max(1, src.height * k);
-  x.drawImage(src, (36 - w) / 2, (27 - h) / 2, w, h);
-  return t.toDataURL();
-}
-function addLayer(src) {
-  const pre = snapshot();
-  let w = src.width, h = src.height;
-  if (w > base.width || h > base.height) {
-    const k = Math.min(base.width / w, base.height / h);
-    w = Math.round(w * k); h = Math.round(h * k);
-  }
-  const c = canvas(src.width, src.height);
-  c.getContext('2d').drawImage(src, 0, 0);
-  const l = { id: uid(), c, x: Math.round((base.width - w) / 2), y: Math.round((base.height - h) / 2), w, h };
-  layers.push(l);
-  commitPre(pre);
-  setSelection([l.id]);
-  render();
-  toast('Added layer ' + layers.length);
-}
-function loadSource(src, w, h) {
-  const c = canvas(w, h); c.getContext('2d').drawImage(src, 0, 0);
-  resetStack(c);
-  toast('Canvas ' + w + ' x ' + h);
-}
-async function blobToSource(blob) {
-  try { return await createImageBitmap(blob); }
-  catch {
-    return await new Promise((res, rej) => {
-      const url = URL.createObjectURL(blob), img = new Image();
-      img.onload = () => { URL.revokeObjectURL(url); res(img); };
-      img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('decode')); };
-      img.src = url;
-    });
-  }
-}
-async function loadBlob(blob) {
-  try {
-    const src = await blobToSource(blob);
-    if (!hasImage) loadSource(src, src.width, src.height);
-    else addLayer(src);
-    if (src.close) src.close();
-  } catch { toast('Could not decode that image'); }
-}
-
-/* ============================ pointer ============================ */
-function toCanvas(e) {
-  const r = view.getBoundingClientRect();
-  return { x: (e.clientX - r.left) * (view.width / r.width), y: (e.clientY - r.top) * (view.height / r.height) };
-}
-function hitText(p) {
-  for (let i = texts.length - 1; i >= 0; i--) {
-    const t = texts[i], b = textBBox(t);
-    if (p.x >= t.x - 6 && p.x <= t.x + b.w + 6 && p.y >= t.y - 6 && p.y <= t.y + b.h + 6) return t;
-  }
-  return null;
-}
-
-function hitLayer(p) {
-  for (let i = layers.length - 1; i >= 0; i--) {
-    const l = layers[i];
-    if (p.x >= l.x && p.x <= l.x + l.w && p.y >= l.y && p.y <= l.y + l.h) return l;
-  }
-  return null;
-}
-function layerHandlePoints(l) {
-  return {
-    nw:[l.x, l.y],            n:[l.x + l.w / 2, l.y],  ne:[l.x + l.w, l.y],
-    w:[l.x, l.y + l.h / 2],                              e:[l.x + l.w, l.y + l.h / 2],
-    sw:[l.x, l.y + l.h],      s:[l.x + l.w / 2, l.y + l.h], se:[l.x + l.w, l.y + l.h],
-    c:[l.x + l.w / 2, l.y + l.h / 2],
-  };
-}
-// Resize handles live on the primary layer; the centre grab block is on every selected layer,
-// so any of them can be dragged to move the whole selection.
-function handleHit(e) {
-  const r = view.getBoundingClientRect(), s = viewScale(), R = HANDLE_PX / 2;
-  const near = pts => {
-    for (const k in pts) {
-      const [hx, hy] = pts[k];
-      if (Math.abs(e.clientX - (r.left + hx * s)) <= R && Math.abs(e.clientY - (r.top + hy * s)) <= R) return k;
-    }
-    return null;
-  };
-  const prim = layers.find(l => l.id === selLayer);
-  if (prim) {
-    const q = layerHandlePoints(prim);
-    const edges = { nw:q.nw, n:q.n, ne:q.ne, w:q.w, e:q.e, sw:q.sw, s:q.s, se:q.se };
-    const k = near(edges);
-    if (k) return { kind:'resize', handle:k };
-  }
-  for (const l of selectedLayerSet()) {
-    const q = layerHandlePoints(l);
-    if (near({ c:q.c })) return { kind:'move', id:l.id };
-  }
-  return null;
+function drawStack(ctx) {
+  ctx.drawImage(base, 0, 0);
+  for (const l of layers) ctx.drawImage(l.c, l.x, l.y, l.w, l.h);
+  ctx.drawImage(overlay, 0, 0);
+  for (const t of texts) paintText(ctx, t);
 }
 function drawLayerOutline(l, isPrimary) {
   const s = viewScale(), t = 16 / s;
@@ -743,9 +701,141 @@ function drawLayerOutline(l, isPrimary) {
   vctx.strokeRect(cx - cs / 2, cy - cs / 2, cs, cs);
   vctx.restore();
 }
-function selectedLayerSet() {
-  const ids = selLayers.length ? selLayers : (selLayer ? [selLayer] : []);
-  return ids.map(id => layers.find(l => l.id === id)).filter(Boolean);
+function drawHoverOutline(l) {
+  const s = viewScale();
+  vctx.save();
+  vctx.strokeStyle = '#60a5fa'; vctx.lineWidth = 1.5 / s;
+  vctx.setLineDash([4 / s, 4 / s]);
+  vctx.strokeRect(l.x, l.y, l.w, l.h);
+  vctx.restore();
+}
+function drawBlob(b) {
+  const s = viewScale(), t = 13 / s;
+  vctx.save();
+  vctx.beginPath(); vctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+  vctx.fillStyle = 'rgba(236,72,153,.13)'; vctx.fill();
+  vctx.strokeStyle = '#ec4899'; vctx.lineWidth = 2 / s; vctx.setLineDash([8 / s, 6 / s]);
+  vctx.stroke();
+  vctx.setLineDash([]);
+  vctx.fillStyle = '#ec4899';
+  vctx.fillRect(b.x - t / 2, b.y - t / 2, t, t);
+  vctx.restore();
+}
+function drawSelectionOverlay(r) {
+  const s = viewScale();
+  vctx.save();
+  vctx.fillStyle = 'rgba(0,0,0,.14)';
+  vctx.beginPath(); vctx.rect(0, 0, view.width, view.height); vctx.rect(r.x, r.y, r.w, r.h);
+  vctx.fill('evenodd');
+  vctx.strokeStyle = '#3b82f6'; vctx.lineWidth = 1.5 / s; vctx.setLineDash([7 / s, 5 / s]);
+  vctx.strokeRect(r.x, r.y, r.w, r.h);
+  vctx.setLineDash([]);
+  const t = 9 / s;
+  vctx.fillStyle = '#3b82f6';
+  for (const [cx, cy] of [[r.x,r.y],[r.x+r.w,r.y],[r.x,r.y+r.h],[r.x+r.w,r.y+r.h]]) vctx.fillRect(cx - t/2, cy - t/2, t, t);
+  vctx.restore();
+}
+function render() {
+  if (!hasImage) return;
+  vctx.setTransform(1, 0, 0, 1, 0, 0);
+  vctx.filter = 'none';
+  vctx.clearRect(0, 0, view.width, view.height);
+  drawStack(vctx);
+  // Adjust applies to the FINAL image, or only inside the selection if there is one.
+  const f = filterCSS();
+  if (f !== 'none') {
+    vctx.save();
+    if (selection) { vctx.beginPath(); vctx.rect(selection.x, selection.y, selection.w, selection.h); vctx.clip(); }
+    vctx.filter = f;
+    drawStack(vctx);
+    vctx.restore();
+    vctx.filter = 'none';
+  }
+  const sel = texts.find(t => t.id === selText);
+  if (sel) drawSelection(sel);
+  for (const l of selectedLayerSet()) drawLayerOutline(l, l.id === selLayer);
+  if (tool === 'move' && hoverId && !selLayers.includes(hoverId)) {
+    const hl = layers.find(l => l.id === hoverId);
+    if (hl) drawHoverOutline(hl);
+  }
+  if (drag && drag.shape) paintShape(vctx, drag.shape);
+  if (crop) drawCropOverlay();
+  else if (drag && drag.kind === 'marquee') drawSelectionOverlay(marqueeRect(drag));
+  else if (selection) drawSelectionOverlay(selection);
+  for (const b of blobs) drawBlob(b);        // UI only, above everything
+  updateSelBar();
+}
+
+/* -------------------------------------------------------------- 8  pointer */
+function setTool(id) {
+  if (tool === 'crop' && id !== 'crop') cancelCrop();
+  tool = id;
+  [...toolsEl.children].forEach(b => b.classList.toggle('active', b.dataset.tool === id));
+  view.style.cursor = id === 'text' ? 'text' : ((id === 'move' || id === 'marquee') ? 'default' : 'crosshair');
+  $('#fontRow').style.display = (id === 'text' || id === 'move') ? '' : 'none';
+  $('#wandSec').hidden = id !== 'wand';
+  $('#cropSec').hidden = !crop;
+  if (id === 'highlight' && $('#opacity').value === '1') setRange('opacity', 0.4);
+  if (id !== 'move' && id !== 'text') { selText = null; updateSelBar(); }
+  render();
+}
+function toCanvas(e) {
+  const r = view.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * (view.width / r.width), y: (e.clientY - r.top) * (view.height / r.height) };
+}
+function hitText(p) {
+  for (let i = texts.length - 1; i >= 0; i--) {
+    const t = texts[i], b = textBBox(t);
+    if (p.x >= t.x - 6 && p.x <= t.x + b.w + 6 && p.y >= t.y - 6 && p.y <= t.y + b.h + 6) return t;
+  }
+  return null;
+}
+function hitLayer(p) {
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const l = layers[i];
+    if (p.x >= l.x && p.x <= l.x + l.w && p.y >= l.y && p.y <= l.y + l.h) return l;
+  }
+  return null;
+}
+function layersAt(p) {                       // front-most first
+  const out = [];
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const l = layers[i];
+    if (p.x >= l.x && p.x <= l.x + l.w && p.y >= l.y && p.y <= l.y + l.h) out.push(l);
+  }
+  return out;
+}
+function layerHandlePoints(l) {
+  return {
+    nw:[l.x, l.y],            n:[l.x + l.w / 2, l.y],  ne:[l.x + l.w, l.y],
+    w:[l.x, l.y + l.h / 2],                              e:[l.x + l.w, l.y + l.h / 2],
+    sw:[l.x, l.y + l.h],      s:[l.x + l.w / 2, l.y + l.h], se:[l.x + l.w, l.y + l.h],
+    c:[l.x + l.w / 2, l.y + l.h / 2],
+  };
+}
+// Resize handles live on the primary layer; the centre grab block is on every
+// selected layer, so any of them can be dragged to move the whole selection.
+function handleHit(e) {
+  const r = view.getBoundingClientRect(), s = viewScale(), R = HANDLE_PX / 2;
+  const near = pts => {
+    for (const k in pts) {
+      const [hx, hy] = pts[k];
+      if (Math.abs(e.clientX - (r.left + hx * s)) <= R && Math.abs(e.clientY - (r.top + hy * s)) <= R) return k;
+    }
+    return null;
+  };
+  const prim = primaryLayer();
+  if (prim) {
+    const q = layerHandlePoints(prim);
+    const edges = { nw:q.nw, n:q.n, ne:q.ne, w:q.w, e:q.e, sw:q.sw, s:q.s, se:q.se };
+    const k = near(edges);
+    if (k) return { kind:'resize', handle:k };
+  }
+  for (const l of selectedLayerSet()) {
+    const q = layerHandlePoints(l);
+    if (near({ c:q.c })) return { kind:'move', id:l.id };
+  }
+  return null;
 }
 function layerResizeTo(l, d, p) {
   const ow = d.ow, oh = d.oh, right = d.ox + ow, bottom = d.oy + oh;
@@ -777,7 +867,13 @@ function layerResizeTo(l, d, p) {
   else                        { l.x = right - nw; l.y = d.oy; }
   l.w = nw; l.h = nh;
 }
-view.addEventListener('pointerdown', e => {
+function startTextDrag(t, p, e) {
+  beginGesture();
+  drag = { kind:'text', id:t.id, ox:p.x - t.x, oy:p.y - t.y };
+  try { view.setPointerCapture(e.pointerId); } catch {}
+  render();
+}
+function onPointerDown(e) {
   if (!hasImage) return;
   e.preventDefault();                    // stop the browser's own drag/selection starting on mousedown
   const p = toCanvas(e);
@@ -826,7 +922,7 @@ view.addEventListener('pointerdown', e => {
                  orig: movingIds().map(id => { const q = layers.find(z => z.id === id); return { id, x:q.x, y:q.y }; }) };
         capture(); render(); return;
       }
-      const l = layers.find(x => x.id === selLayer);
+      const l = primaryLayer();
       beginGesture();
       drag = { kind:'layerResize', id:l.id, handle:hh.handle, ox:l.x, oy:l.y, ow:l.w, oh:l.h };
       capture(); render(); return;
@@ -859,14 +955,8 @@ view.addEventListener('pointerdown', e => {
                                   filled:style.filled, x1:p.x, y1:p.y, x2:p.x, y2:p.y, points:[p] } };
   capture();
   render();
-});
-function startTextDrag(t, p, e) {
-  beginGesture();
-  drag = { kind:'text', id:t.id, ox:p.x - t.x, oy:p.y - t.y };
-  try { view.setPointerCapture(e.pointerId); } catch {}
-  render();
 }
-view.addEventListener('pointermove', e => {
+function onPointerMove(e) {
   if (!hasImage) return;
   const p = toCanvas(e);
   if (tool === 'move' && !drag && !cropDrag) {
@@ -899,8 +989,8 @@ view.addEventListener('pointermove', e => {
     else { s.x2 = p.x; s.y2 = p.y; }
   }
   render();
-});
-function endPointer() {
+}
+function onPointerUp() {
   if (cropDrag) { cropDrag = null; if (crop && (crop.w < 12 || crop.h < 12)) crop = defaultCrop(); $('#cropSec').hidden = !crop; commitGesture(true); render(); return; }
   if (!drag) return;
   const d = drag; drag = null;
@@ -915,15 +1005,15 @@ function endPointer() {
   const s = d.shape;
   const moved = (s.points && s.points.length > 1) || Math.abs(s.x2 - s.x1) > 1 || Math.abs(s.y2 - s.y1) > 1;
   if (!moved) { commitGesture(false); render(); return; }
+  ownOverlay();                    // history may still own this exact canvas
   paintShape(octx, s);
   commitGesture(true);
   render();
 }
-view.addEventListener('pointerleave', () => { if (hoverId) { hoverId = null; render(); } });
-view.addEventListener('pointerup', endPointer);
-view.addEventListener('pointercancel', () => { drag = null; cropDrag = null; render(); });
+function onPointerCancel() { drag = null; cropDrag = null; render(); }
+function onPointerLeave() { if (hoverId) { hoverId = null; render(); } }
 
-/* ============================ text boxes ============================ */
+/* ------------------------------------------------------------ 9  text */
 function selectText(t) {
   selText = t.id;
   style.family = t.family; style.bold = t.bold; style.italic = t.italic;
@@ -968,10 +1058,7 @@ function openTextEditor(t, pre, isNew) {
     t.text = v;
     const emptied = !v.trim();
     if (emptied) { texts = texts.filter(x => x !== t); if (selText === t.id) selText = null; }
-    if (v !== before || emptied) {
-      undoStack.push(pre); if (undoStack.length > MAX_UNDO) undoStack.shift();
-      redoStack.length = 0; updateHistoryUI();
-    }
+    if (v !== before || emptied) commitPre(pre); else drop(pre);
     render();
   };
   ta.addEventListener('blur', commit);
@@ -986,16 +1073,16 @@ function deleteSelected() {
   const t = texts.find(x => x.id === selText); if (!t) return;
   const pre = snapshot();
   texts = texts.filter(x => x !== t); selText = null;
-  undoStack.push(pre); if (undoStack.length > MAX_UNDO) undoStack.shift();
-  redoStack.length = 0; updateHistoryUI(); render();
+  commitPre(pre);
+  render();
 }
 function duplicateSelected() {
   const t = texts.find(x => x.id === selText); if (!t) return;
   const pre = snapshot();
   const c = { ...t, id: uid(), x: t.x + t.size * 0.4, y: t.y + t.size * 0.4 };
   texts.push(c); selText = c.id;
-  undoStack.push(pre); if (undoStack.length > MAX_UNDO) undoStack.shift();
-  redoStack.length = 0; updateHistoryUI(); render();
+  commitPre(pre);
+  render();
 }
 function updateSelBar() {
   const bar = $('#selbar');
@@ -1009,28 +1096,11 @@ function updateSelBar() {
   bar.style.left = clamp(left, 4, Math.max(4, sr.width - 190)) + 'px';
   bar.style.top = clamp(top, 4, sr.height - 40) + 'px';
 }
-$('#selEdit').onclick = editSelected;
-$('#selDup').onclick = duplicateSelected;
-$('#selDel').onclick = deleteSelected;
 
-/* ============================ selection + effects ============================ */
+/* ------------------------------------------------------- 10  selection/effects */
 function marqueeRect(d) {
   return { x: Math.min(d.startX, d.x2), y: Math.min(d.startY, d.y2),
            w: Math.abs(d.x2 - d.startX), h: Math.abs(d.y2 - d.startY) };
-}
-function drawSelectionOverlay(r) {
-  const s = viewScale();
-  vctx.save();
-  vctx.fillStyle = 'rgba(0,0,0,.14)';
-  vctx.beginPath(); vctx.rect(0, 0, view.width, view.height); vctx.rect(r.x, r.y, r.w, r.h);
-  vctx.fill('evenodd');
-  vctx.strokeStyle = '#3b82f6'; vctx.lineWidth = 1.5 / s; vctx.setLineDash([7 / s, 5 / s]);
-  vctx.strokeRect(r.x, r.y, r.w, r.h);
-  vctx.setLineDash([]);
-  const t = 9 / s;
-  vctx.fillStyle = '#3b82f6';
-  for (const [cx, cy] of [[r.x,r.y],[r.x+r.w,r.y],[r.x,r.y+r.h],[r.x+r.w,r.y+r.h]]) vctx.fillRect(cx - t/2, cy - t/2, t, t);
-  vctx.restore();
 }
 function updateSelInfo() {
   const el = $('#selInfo'); if (!el) return;
@@ -1044,14 +1114,215 @@ function selectAll() {
   updateSelInfo(); render(); toast('Selected whole image');
 }
 function clearSelection() { selection = null; updateSelInfo(); render(); }
-
+function regionRect() {
+  const r = selection || { x:0, y:0, w:base.width, h:base.height };
+  const x = clamp(Math.round(r.x), 0, base.width);
+  const y = clamp(Math.round(r.y), 0, base.height);
+  return { x, y, w: clamp(Math.round(r.w), 1, base.width - x), h: clamp(Math.round(r.h), 1, base.height - y) };
+}
+// Effects work on the flattened composite inside the selection, and land as a new layer.
+function applyCompositeEffect(kind) {
+  if (!hasImage) return;
+  const r = regionRect();
+  if (r.w < 2 || r.h < 2) return;
+  pushUndo();
+  const src = composite(false, false);
+  const patch = canvas(r.w, r.h);
+  const pc = patch.getContext('2d');
+  pc.drawImage(src, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+  if (kind === 'pixelate') {
+    const block = Math.max(2, Math.round(fx.block));
+    const tw = Math.max(1, Math.round(r.w / block)), th = Math.max(1, Math.round(r.h / block));
+    const t = canvas(tw, th);
+    t.getContext('2d').drawImage(patch, 0, 0, r.w, r.h, 0, 0, tw, th);
+    pc.clearRect(0, 0, r.w, r.h);
+    pc.imageSmoothingEnabled = false;
+    pc.drawImage(t, 0, 0, tw, th, 0, 0, r.w, r.h);
+  } else {
+    const t = canvas(r.w, r.h), tc = t.getContext('2d');
+    tc.filter = `blur(${Math.max(0.5, fx.soft)}px)`; tc.drawImage(patch, 0, 0);
+    pc.clearRect(0, 0, r.w, r.h); pc.drawImage(t, 0, 0);
+  }
+  const l = { id: uid(), c: patch, x: r.x, y: r.y, w: r.w, h: r.h };
+  layers.push(l);
+  setSelection([l.id]);
+  render();
+  toast((kind === 'pixelate' ? 'Pixelated' : 'Blurred') + ' selection');
+}
 function applyPixelate() { applyCompositeEffect('pixelate'); }
-function applyBlur() { applyCompositeEffect('blur'); }
+function applyBlur()     { applyCompositeEffect('blur'); }
 
-/* ============================ layers panel ============================ */
+// Bake the adjustments as a layer: the whole final image, or just the selection.
+// The patch already holds the filtered pixels, so the sliders reset — otherwise
+// the live filter would be applied a second time on top of it.
+function applyAdjust() {
+  if (!hasImage) return;
+  if (filterCSS() === 'none') return toast('No adjustments to apply');
+  const r = regionRect();
+  pushUndo();
+  const src = composite(false, true);
+  const patch = canvas(r.w, r.h);
+  patch.getContext('2d').drawImage(src, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+  const l = { id: uid(), c: patch, x: r.x, y: r.y, w: r.w, h: r.h };
+  layers.push(l);
+  setSelection([l.id]);
+  adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
+  render();
+  toast(selection ? 'Adjusted the selection' : 'Adjusted the image');
+}
+
+// Cheap fingerprint of the decoded pixels. PNG bytes get re-encoded by the browser
+// on the way through the system clipboard, but the pixels survive exactly, so this
+// is how we tell "that paste is my own copy" from "that paste is a new image".
+function pixelSig(src) {
+  const c = canvas(32, 32), x = c.getContext('2d');
+  x.clearRect(0, 0, 32, 32);
+  x.drawImage(src, 0, 0, 32, 32);
+  const d = x.getImageData(0, 0, 32, 32).data;
+  let h = 2166136261;
+  for (let i = 0; i < d.length; i++) { h ^= d[i]; h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+async function copySel() {
+  if (selection) {
+    const r = regionRect();
+    const comp = composite(true);
+    const c = canvas(r.w, r.h);
+    c.getContext('2d').drawImage(comp, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+    clip = { c, region:true, x:r.x, y:r.y, w:r.w, h:r.h };
+  } else {
+    const l = primaryLayer();
+    if (!l) { toast('Select a layer or make a selection first'); return; }
+    clip = { c: clone(l.c), region:false, x:l.x, y:l.y, w:l.w, h:l.h };
+  }
+  // Set this BEFORE any await: paste routing must recognise our own copy immediately,
+  // even if the user hits Ctrl+V before the clipboard mirror finishes.
+  clipSig = pixelSig(clip.c);
+  // Tell the user now rather than after the async write - the mirror is best-effort
+  // and can be slow, and the copy is already usable without it.
+  toast(clip.region ? 'Copied selection' : 'Copied layer');
+  // Best-effort mirror onto the OS clipboard so other apps can paste the copy. Held as a
+  // promise so callers can await the write instead of guessing when it has landed.
+  clipMirror = (async () => {
+    try {
+      const blob = await new Promise(r => clip.c.toBlob(r, 'image/png'));
+      await navigator.clipboard.write([ new ClipboardItem({ 'image/png': blob }) ]);
+    } catch { /* insecure context: internal buffer only, routing still works by pixels */ }
+  })();
+  return clipMirror;
+}
+function pasteClip() {
+  if (!clip) { toast('Nothing to paste'); return; }
+  const pre = snapshot();
+  const off = clip.region ? 0 : 24;
+  const l = { id: uid(), c: clone(clip.c), x: clip.x + off, y: clip.y + off, w: clip.w, h: clip.h };
+  layers.push(l);
+  commitPre(pre);
+  setSelection([l.id]);
+  render();
+  toast(clip.region ? 'Pasted selection as a layer' : 'Duplicated layer');
+}
+function flattenChecked() {
+  const ids = new Set([...checkedLayers].filter(id => layers.some(l => l.id === id)));
+  const ann = flattenAnnotations;
+  if (!ids.size && !ann) { toast('Tick at least one row to flatten'); return; }
+  const pre = snapshot();
+  const comp = canvas(base.width, base.height), cx = comp.getContext('2d');
+  cx.filter = filterCSS(); cx.drawImage(base, 0, 0);
+  for (const l of layers) if (ids.has(l.id)) cx.drawImage(l.c, l.x, l.y, l.w, l.h);
+  if (ann) {
+    cx.drawImage(overlay, 0, 0);
+    for (const t of texts) paintText(cx, t);
+  }
+  base = comp; bctx = base.getContext('2d');
+  layers = layers.filter(l => !ids.has(l.id));
+  if (ann) {
+    overlay = canvas(base.width, base.height); octx = overlay.getContext('2d');
+    texts = []; selText = null;
+  }
+  adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
+  checkedLayers = new Set(); flattenAnnotations = false;
+  commitPre(pre);
+  setSelection(selLayers);
+  render();
+  toast('Flattened into the background');
+}
+function doWand(p) {
+  const l = primaryLayer();
+  const tgt = l ? l.c : base;
+  const tctx = l ? tgt.getContext('2d') : bctx;
+  const kx = l ? tgt.width / l.w : 1, ky = l ? tgt.height / l.h : 1;
+  const x = Math.round(l ? (p.x - l.x) * kx : p.x);
+  const y = Math.round(l ? (p.y - l.y) * ky : p.y);
+  if (x < 0 || y < 0 || x >= tgt.width || y >= tgt.height) return;
+  const b = selection
+    ? (l ? { x:(selection.x - l.x) * kx, y:(selection.y - l.y) * ky, w:selection.w * kx, h:selection.h * ky }
+         : selection)
+    : null;
+  const img = tctx.getImageData(0, 0, tgt.width, tgt.height);
+  const filled = floodFill(img, tgt.width, tgt.height, x, y, wand.tolerance, wand.global, b);
+  if (!filled) { toast('Nothing matched — raise tolerance'); return; }
+  pushUndo();
+  // history may still own this canvas; take a private copy before writing pixels
+  if (l) { ownLayer(l); l.c.getContext('2d').putImageData(img, 0, 0); }
+  else   { ownBase();  bctx.putImageData(img, 0, 0); }
+  render();
+  toast('Erased ' + filled.toLocaleString() + ' px');
+}
+function floodFill(img, w, h, sx, sy, tolerance, globalMode, b) {
+  const d = img.data;
+  const x0 = b ? Math.max(0, b.x) : 0, y0 = b ? Math.max(0, b.y) : 0;
+  const x1 = b ? Math.min(w, b.x + b.w) : w, y1 = b ? Math.min(h, b.y + b.h) : h;
+  if (sx < x0 || sx >= x1 || sy < y0 || sy >= y1) return 0;
+  const i0 = (sy * w + sx) * 4;
+  const tr = d[i0], tg = d[i0 + 1], tb = d[i0 + 2], ta = d[i0 + 3];
+  const max = (tolerance / 100) * 441.67;
+  const th2 = max * max;
+  const eq = i => {
+    if (d[i + 3] === 0 && ta === 0) return true;
+    const dr = d[i] - tr, dg = d[i + 1] - tg, db = d[i + 2] - tb;
+    return dr * dr + dg * dg + db * db <= th2;
+  };
+  if (globalMode) {
+    let n = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+      const i = (y * w + x) * 4;
+      if (d[i + 3] !== 0 && eq(i)) { d[i + 3] = 0; n++; }
+    }
+    return n;
+  }
+  const seen = new Uint8Array(w * h);
+  const stack = [sx, sy];
+  let n = 0;
+  while (stack.length) {
+    const y = stack.pop(), x = stack.pop();
+    let xl = x;
+    while (xl >= x0 && !seen[y * w + xl] && eq((y * w + xl) * 4)) xl--;
+    xl++;
+    let xr = x;
+    while (xr < x1 && !seen[y * w + xr] && eq((y * w + xr) * 4)) xr++;
+    xr--;
+    for (let xi = xl; xi <= xr; xi++) {
+      const k = y * w + xi;
+      seen[k] = 1; d[k * 4 + 3] = 0; n++;
+      if (y > y0 && !seen[k - w] && eq((k - w) * 4)) { stack.push(xi, y - 1); }
+      if (y < y1 - 1 && !seen[k + w] && eq((k + w) * 4)) { stack.push(xi, y + 1); }
+    }
+  }
+  return n;
+}
+
+/* -------------------------------------------------------------- 11  layers */
+function makeThumb(src) {
+  const t = canvas(36, 27), x = t.getContext('2d');
+  const k = Math.min(36 / src.width, 27 / src.height);
+  const w = Math.max(1, src.width * k), h = Math.max(1, src.height * k);
+  x.drawImage(src, (36 - w) / 2, (27 - h) / 2, w, h);
+  return t.toDataURL();
+}
 function updateLayerUI() {
-  const list = $('#layerList'); if (!list) return;
-  list.innerHTML = '';
+  if (!layerList) return;
+  layerList.innerHTML = '';
   const addRow = (label, thumb, opts = {}) => {
     const row = document.createElement('div');
     const active = opts.id ? selLayers.includes(opts.id) : false;
@@ -1069,7 +1340,7 @@ function updateLayerUI() {
     const tx = document.createElement('span'); tx.className = 'lbl'; tx.textContent = label;
     row.appendChild(tx);
     if (opts.onclick) row.onclick = opts.onclick;
-    list.appendChild(row);
+    layerList.appendChild(row);
   };
   addRow('Annotations (top)', null, {
     tick: () => flattenAnnotations,
@@ -1134,7 +1405,7 @@ function layerDelete() {
   updateLayerUI(); render();
 }
 function layerRotate(deg) {
-  const l = layers.find(x => x.id === selLayer); if (!l) return;
+  const l = primaryLayer(); if (!l) return;
   const pre = snapshot();
   const ow = l.w, oh = l.h, cx = l.x + ow / 2, cy = l.y + oh / 2;
   const t = canvas(l.c.height, l.c.width), c = t.getContext('2d');
@@ -1151,191 +1422,7 @@ function toggleLayers() {
   $('#layersToggle').textContent = body.hidden ? 'Show' : 'Hide';
 }
 
-/* ============================ magic wand ============================ */
-function targetLayer() { return layers.find(l => l.id === selLayer) || null; }
-function primaryLayer() { return layers.find(l => l.id === selLayer) || null; }
-function movingIds() {
-  const ids = (selLayers && selLayers.includes(selLayer)) ? selLayers : (selLayer ? [selLayer] : []);
-  return ids.filter(id => layers.some(l => l.id === id));
-}
-function setSelection(ids) {
-  const seen = [];
-  for (const id of ids) if (layers.some(l => l.id === id) && !seen.includes(id)) seen.push(id);
-  selLayers = seen;
-  selLayer = seen.length ? seen[seen.length - 1] : null;
-  if (selLayer) selText = null;
-  updateLayerUI();
-}
-function regionRect() {
-  const r = selection || { x:0, y:0, w:base.width, h:base.height };
-  const x = clamp(Math.round(r.x), 0, base.width);
-  const y = clamp(Math.round(r.y), 0, base.height);
-  return { x, y, w: clamp(Math.round(r.w), 1, base.width - x), h: clamp(Math.round(r.h), 1, base.height - y) };
-}
-// Effects work on the flattened composite inside the selection, and land as a new layer.
-function applyCompositeEffect(kind) {
-  if (!hasImage) return;
-  const r = regionRect();
-  if (r.w < 2 || r.h < 2) return;
-  pushUndo();
-  const src = composite(false, false);
-  const patch = canvas(r.w, r.h);
-  const pc = patch.getContext('2d');
-  pc.drawImage(src, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
-  if (kind === 'pixelate') {
-    const block = Math.max(2, Math.round(fx.block));
-    const tw = Math.max(1, Math.round(r.w / block)), th = Math.max(1, Math.round(r.h / block));
-    const t = canvas(tw, th);
-    t.getContext('2d').drawImage(patch, 0, 0, r.w, r.h, 0, 0, tw, th);
-    pc.clearRect(0, 0, r.w, r.h);
-    pc.imageSmoothingEnabled = false;
-    pc.drawImage(t, 0, 0, tw, th, 0, 0, r.w, r.h);
-  } else {
-    const t = canvas(r.w, r.h), tc = t.getContext('2d');
-    tc.filter = `blur(${Math.max(0.5, fx.soft)}px)`; tc.drawImage(patch, 0, 0);
-    pc.clearRect(0, 0, r.w, r.h); pc.drawImage(t, 0, 0);
-  }
-  const l = { id: uid(), c: patch, x: r.x, y: r.y, w: r.w, h: r.h };
-  layers.push(l);
-  setSelection([l.id]);
-  render();
-  toast((kind === 'pixelate' ? 'Pixelated' : 'Blurred') + ' selection');
-}
-// Cheap fingerprint of the decoded pixels. PNG bytes get re-encoded by the browser on the
-// way through the system clipboard, but the pixels survive exactly, so this is how we tell
-// "that paste is my own copy" from "that paste is a new image from elsewhere".
-function pixelSig(src) {
-  const c = canvas(32, 32), x = c.getContext('2d');
-  x.clearRect(0, 0, 32, 32);
-  x.drawImage(src, 0, 0, 32, 32);
-  const d = x.getImageData(0, 0, 32, 32).data;
-  let h = 2166136261;
-  for (let i = 0; i < d.length; i++) { h ^= d[i]; h = Math.imul(h, 16777619); }
-  return h >>> 0;
-}
-async function copySel() {
-  if (selection) {
-    const r = regionRect();
-    const comp = composite(true);
-    const c = canvas(r.w, r.h);
-    c.getContext('2d').drawImage(comp, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
-    clip = { c, region:true, x:r.x, y:r.y, w:r.w, h:r.h };
-  } else {
-    const l = primaryLayer();
-    if (!l) { toast('Select a layer or make a selection first'); return; }
-    clip = { c: clone(l.c), region:false, x:l.x, y:l.y, w:l.w, h:l.h };
-  }
-  // Set this BEFORE any await: paste routing must be able to recognise our own copy
-  // immediately, even if the user hits Ctrl+V before the clipboard mirror finishes.
-  clipSig = pixelSig(clip.c);
-  // Tell the user now rather than after the async clipboard write - the mirror is
-  // best-effort and can be slow, and the copy is already usable without it.
-  toast(clip.region ? 'Copied selection' : 'Copied layer');
-  try {
-    const blob = await new Promise(r => clip.c.toBlob(r, 'image/png'));
-    await navigator.clipboard.write([ new ClipboardItem({ 'image/png': blob }) ]);
-  } catch { /* insecure context: internal buffer only, routing still works by pixels */ }
-}
-function pasteClip() {
-  if (!clip) { toast('Nothing to paste'); return; }
-  const pre = snapshot();
-  const off = clip.region ? 0 : 24;
-  const l = { id: uid(), c: clone(clip.c), x: clip.x + off, y: clip.y + off, w: clip.w, h: clip.h };
-  layers.push(l);
-  commitPre(pre);
-  setSelection([l.id]);
-  render();
-  toast(clip.region ? 'Pasted selection as a layer' : 'Duplicated layer');
-}
-function flattenChecked() {
-  const ids = new Set([...checkedLayers].filter(id => layers.some(l => l.id === id)));
-  const ann = flattenAnnotations;
-  if (!ids.size && !ann) { toast('Tick at least one row to flatten'); return; }
-  const pre = snapshot();
-  const comp = canvas(base.width, base.height), cx = comp.getContext('2d');
-  cx.filter = filterCSS(); cx.drawImage(base, 0, 0);
-  for (const l of layers) if (ids.has(l.id)) cx.drawImage(l.c, l.x, l.y, l.w, l.h);
-  if (ann) {
-    cx.drawImage(overlay, 0, 0);
-    for (const t of texts) paintText(cx, t);
-  }
-  base = comp; bctx = base.getContext('2d');
-  layers = layers.filter(l => !ids.has(l.id));
-  if (ann) {
-    overlay = canvas(base.width, base.height); octx = overlay.getContext('2d');
-    texts = []; selText = null;
-  }
-  adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
-  checkedLayers = new Set(); flattenAnnotations = false;
-  commitPre(pre);
-  setSelection(selLayers);
-  render();
-  toast('Flattened into the background');
-}
-function doWand(p) {
-  const l = targetLayer();
-  const tgt = l ? l.c : base;
-  const tctx = l ? tgt.getContext('2d') : bctx;
-  const kx = l ? tgt.width / l.w : 1, ky = l ? tgt.height / l.h : 1;
-  const x = Math.round(l ? (p.x - l.x) * kx : p.x);
-  const y = Math.round(l ? (p.y - l.y) * ky : p.y);
-  if (x < 0 || y < 0 || x >= tgt.width || y >= tgt.height) return;
-  const b = selection
-    ? (l ? { x:(selection.x - l.x) * kx, y:(selection.y - l.y) * ky, w:selection.w * kx, h:selection.h * ky }
-         : selection)
-    : null;
-  const img = tctx.getImageData(0, 0, tgt.width, tgt.height);
-  const filled = floodFill(img, tgt.width, tgt.height, x, y, wand.tolerance, wand.global, b);
-  if (!filled) { toast('Nothing matched — raise tolerance'); return; }
-  pushUndo();
-  tctx.putImageData(img, 0, 0);
-  render();
-  toast('Erased ' + filled.toLocaleString() + ' px');
-}
-function floodFill(img, w, h, sx, sy, tolerance, globalMode, b) {
-  const d = img.data;
-  const x0 = b ? Math.max(0, b.x) : 0, y0 = b ? Math.max(0, b.y) : 0;
-  const x1 = b ? Math.min(w, b.x + b.w) : w, y1 = b ? Math.min(h, b.y + b.h) : h;
-  if (sx < x0 || sx >= x1 || sy < y0 || sy >= y1) return 0;
-  const i0 = (sy * w + sx) * 4;
-  const tr = d[i0], tg = d[i0 + 1], tb = d[i0 + 2], ta = d[i0 + 3];
-  const max = (tolerance / 100) * 441.67;
-  const th2 = max * max;
-  const eq = i => {
-    if (d[i + 3] === 0 && ta === 0) return true;
-    const dr = d[i] - tr, dg = d[i + 1] - tg, db = d[i + 2] - tb;
-    return dr * dr + dg * dg + db * db <= th2;
-  };
-  if (globalMode) {
-    let n = 0;
-    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
-      const i = (y * w + x) * 4;
-      if (d[i + 3] !== 0 && eq(i)) { d[i + 3] = 0; n++; }
-    }
-    return n;
-  }
-  const seen = new Uint8Array(w * h);
-  const stack = [sx, sy];
-  let n = 0;
-  while (stack.length) {
-    const y = stack.pop(), x = stack.pop();
-    let xl = x;
-    while (xl >= x0 && !seen[y * w + xl] && eq((y * w + xl) * 4)) xl--;
-    xl++;
-    let xr = x;
-    while (xr < x1 && !seen[y * w + xr] && eq((y * w + xr) * 4)) xr++;
-    xr--;
-    for (let xi = xl; xi <= xr; xi++) {
-      const k = y * w + xi;
-      seen[k] = 1; d[k * 4 + 3] = 0; n++;
-      if (y > y0 && !seen[k - w] && eq((k - w) * 4)) { stack.push(xi, y - 1); }
-      if (y < y1 - 1 && !seen[k + w] && eq((k + w) * 4)) { stack.push(xi, y + 1); }
-    }
-  }
-  return n;
-}
-
-/* ============================ crop ============================ */
+/* ---------------------------------------------------------------- 12  crop */
 function defaultCrop() {
   const w = Math.round(base.width * 0.8), h = Math.round(base.height * 0.8);
   return { x: Math.round((base.width - w) / 2), y: Math.round((base.height - h) / 2), w, h };
@@ -1441,9 +1528,10 @@ function applyCrop() {
 }
 function cancelCrop() { crop = null; cropDrag = null; $('#cropSec').hidden = true; render(); }
 
-/* ============================ transforms ============================ */
+/* ----------------------------------------------------------- 13  transform */
 function bakeTexts() {
   if (!texts.length) return;
+  ownOverlay();                    // history may still own this exact canvas
   for (const t of texts) paintText(octx, t);
   texts = []; selText = null;
 }
@@ -1468,7 +1556,7 @@ function resizeAll(w, h) {
 }
 // With a layer selected these act on that layer; otherwise on the whole composition.
 function rotate(deg) {
-  const l = targetLayer();
+  const l = primaryLayer();
   pushUndo();
   if (l) {
     const ow = l.w, oh = l.h, cx = l.x + ow / 2, cy = l.y + oh / 2;
@@ -1492,7 +1580,7 @@ function rotate(deg) {
   resizeView(); render(); updateLayerUI(); toast('Rotated canvas');
 }
 function flip(axis) {
-  const l = targetLayer();
+  const l = primaryLayer();
   pushUndo();
   const mirror = src => {
     const t = canvas(src.width, src.height), c = t.getContext('2d');
@@ -1515,38 +1603,8 @@ function flip(axis) {
   selection = null; updateSelInfo();
   resizeView(); render(); updateLayerUI(); toast('Flipped canvas');
 }
-// Bake the adjustments as a layer: the whole final image, or just the selection.
-// The patch already contains the filtered pixels, so the sliders reset - otherwise
-// the live filter would be applied a second time on top of it.
-function applyAdjust() {
-  if (!hasImage) return;
-  if (filterCSS() === 'none') return toast('No adjustments to apply');
-  const r = regionRect();
-  pushUndo();
-  const src = composite(false, true);
-  const patch = canvas(r.w, r.h);
-  patch.getContext('2d').drawImage(src, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
-  const l = { id: uid(), c: patch, x: r.x, y: r.y, w: r.w, h: r.h };
-  layers.push(l);
-  setSelection([l.id]);
-  adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
-  render();
-  toast(selection ? 'Adjusted the selection' : 'Adjusted the image');
-}
 
-/* ============================ distort blobs (UI only) ============================ */
-function drawBlob(b) {
-  const s = viewScale(), t = 13 / s;
-  vctx.save();
-  vctx.beginPath(); vctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-  vctx.fillStyle = 'rgba(236,72,153,.13)'; vctx.fill();
-  vctx.strokeStyle = '#ec4899'; vctx.lineWidth = 2 / s; vctx.setLineDash([8 / s, 6 / s]);
-  vctx.stroke();
-  vctx.setLineDash([]);
-  vctx.fillStyle = '#ec4899';
-  vctx.fillRect(b.x - t / 2, b.y - t / 2, t, t);
-  vctx.restore();
-}
+/* ----------------------------------------------------------------- 14  fun */
 // Inverse-mapped bulge / pinch. strength > 0 magnifies, < 0 pinches.
 function bulge(src, cx, cy, r, strength) {
   const w = src.width, h = src.height;
@@ -1575,79 +1633,13 @@ function bulge(src, cx, cy, r, strength) {
 }
 // Blobs live in composition space; map them onto whatever is about to be fried.
 function warpedSource() {
-  const l = targetLayer();
+  const l = primaryLayer();
   let c = clone(l ? l.c : base);
   if (!blobs.length) return c;
   const kx = l ? c.width / l.w : 1, ky = l ? c.height / l.h : 1;
   const ox = l ? l.x : 0, oy = l ? l.y : 0;
   for (const b of blobs) c = bulge(c, (b.x - ox) * kx, (b.y - oy) * ky, b.r * kx, b.str);
   return c;
-}
-
-/* ============================ desktop layer picking ============================ */
-function layersAt(p) {                       // front-most first
-  const out = [];
-  for (let i = layers.length - 1; i >= 0; i--) {
-    const l = layers[i];
-    if (p.x >= l.x && p.x <= l.x + l.w && p.y >= l.y && p.y <= l.y + l.h) out.push(l);
-  }
-  return out;
-}
-function drawHoverOutline(l) {
-  const s = viewScale();
-  vctx.save();
-  vctx.strokeStyle = '#60a5fa'; vctx.lineWidth = 1.5 / s;
-  vctx.setLineDash([4 / s, 4 / s]);
-  vctx.strokeRect(l.x, l.y, l.w, l.h);
-  vctx.restore();
-}
-let nudgeTimer = null;
-function nudgeSelected(dx, dy) {
-  const ids = movingIds();
-  if (!ids.length) return;
-  if (!nudgeTimer) pushUndo();               // one undo entry per burst of arrow presses
-  clearTimeout(nudgeTimer);
-  nudgeTimer = setTimeout(() => { nudgeTimer = null; }, 700);
-  for (const id of ids) {
-    const l = layers.find(z => z.id === id);
-    if (l) { l.x += dx; l.y += dy; }
-  }
-  render();
-}
-
-/* ============================ deep fry ============================ */
-const FRY = {
-  light:  { q:72, passes:1, sat:2.2, con:1.25, nz:10, sh:0.55 },
-  medium: { q:48, passes:2, sat:3.2, con:1.45, nz:16, sh:0.85 },
-  deep:   { q:32, passes:3, sat:4.5, con:1.70, nz:24, sh:1.15 },
-  nuked:  { q:16, passes:5, sat:6.0, con:2.10, nz:38, sh:1.55 },
-};
-async function deepfry(level) {
-  if (!hasImage) return;
-  const P = FRY[level] || FRY.deep;
-  pushUndo();
-  toast('Frying…');
-  await new Promise(r => setTimeout(r, 20));
-  const l = targetLayer();
-  let c = warpedSource();                    // distort blobs are applied before frying
-  for (let i = 0; i < P.passes; i++) c = await fryPass(c, P, i);
-  if (l) { l.c = c; updateLayerUI(); render(); } else setBase(c);
-  toast('Deep fried: ' + level);
-}
-async function fryPass(src, P, i) {
-  const w = src.width, h = src.height;
-  const t = canvas(w, h), c = t.getContext('2d');
-  c.filter = `saturate(${P.sat * 100}%) contrast(${P.con * 100}%) brightness(${100 + i * 3}%)`;
-  c.drawImage(src, 0, 0);
-  const img = c.getImageData(0, 0, w, h);
-  if (P.sh) sharpen(img, w, h, P.sh);
-  if (P.nz) addNoise(img, P.nz);
-  c.putImageData(img, 0, 0);
-  const blob = await new Promise(r => t.toBlob(r, 'image/jpeg', P.q / 100));
-  const bmp = await createImageBitmap(blob);
-  const o = canvas(w, h); o.getContext('2d').drawImage(bmp, 0, 0);
-  if (bmp.close) bmp.close();
-  return o;
 }
 function sharpen(img, w, h, k) {
   const src = new Uint8ClampedArray(img.data), d = img.data, c0 = 1 + 4 * k;
@@ -1667,13 +1659,40 @@ function addNoise(img, amount) {
     d[i] += n; d[i + 1] += n; d[i + 2] += n;
   }
 }
+async function fryPass(src, P, i) {
+  const w = src.width, h = src.height;
+  const t = canvas(w, h), c = t.getContext('2d');
+  c.filter = `saturate(${P.sat * 100}%) contrast(${P.con * 100}%) brightness(${100 + i * 3}%)`;
+  c.drawImage(src, 0, 0);
+  const img = c.getImageData(0, 0, w, h);
+  if (P.sh) sharpen(img, w, h, P.sh);
+  if (P.nz) addNoise(img, P.nz);
+  c.putImageData(img, 0, 0);
+  const blob = await new Promise(r => t.toBlob(r, 'image/jpeg', P.q / 100));
+  const bmp = await createImageBitmap(blob);
+  const o = canvas(w, h); o.getContext('2d').drawImage(bmp, 0, 0);
+  if (bmp.close) bmp.close();
+  return o;
+}
+async function deepfry(level) {
+  if (!hasImage) return;
+  const P = FRY[level] || FRY.deep;
+  pushUndo();
+  toast('Frying…');
+  await new Promise(r => setTimeout(r, 20));
+  const l = primaryLayer();
+  let c = warpedSource();                    // distort blobs are applied before frying
+  for (let i = 0; i < P.passes; i++) c = await fryPass(c, P, i);
+  if (l) { l.c = c; updateLayerUI(); render(); } else setBase(c);
+  toast('Deep fried: ' + level);
+}
 
-/* ============================ background removal (server) ============================ */
+/* ------------------------------------------------------------------ 15  bg */
 async function removeBgServer() {
   if (!hasImage) return;
   const url = ($('#bgUrl').value || '').trim();
   if (!url) { toast('Set a server URL first'); return; }
-  const l = targetLayer();
+  const l = primaryLayer();
   const src = l ? l.c : base;
   toast('Removing background…');
   try {
@@ -1696,7 +1715,7 @@ async function removeBgServer() {
   }
 }
 
-/* ============================ export ============================ */
+/* -------------------------------------------------------------- 16  export */
 function composite(withAnnotations = true, withFilter = true) {
   const raw = canvas(base.width, base.height), rc = raw.getContext('2d');
   rc.drawImage(base, 0, 0);
@@ -1737,7 +1756,105 @@ async function copyToClipboard() {
   } catch (err) { console.error(err); toast('Clipboard blocked — needs https/localhost'); }
 }
 
-/* ============================ UI wiring ============================ */
+/* ------------------------------------------------------------ 17  document */
+function syncOverlaySize() {
+  if (overlay.width !== base.width || overlay.height !== base.height) {
+    const t = canvas(base.width, base.height);
+    t.getContext('2d').drawImage(overlay, 0, 0);
+    overlay = t; octx = overlay.getContext('2d');
+  }
+}
+function resizeView() {
+  view.width = base.width; view.height = base.height;
+  view.style.display = 'block';
+  $('#hint').style.display = 'none';
+  $('#rw').value = base.width; $('#rh').value = base.height;
+  aspect = base.width / base.height;
+  syncOverlaySize();
+}
+function setBase(c) {
+  base = c; bctx = base.getContext('2d');
+  selection = null; updateSelInfo();     // geometry changed, so any marquee is stale
+  resizeView(); render();
+}
+function resetStack(c) {
+  hasImage = true;
+  dropStack(undoStack); dropStack(redoStack); drop(gestureSnap); gestureSnap = null;
+  texts = []; selText = null; crop = null; cropDrag = null; selection = null;
+  layers = []; selLayer = null; selLayers = [];
+  checkedLayers = new Set(); flattenAnnotations = false; clip = null; clipSig = null;
+  adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
+  base = c; bctx = c.getContext('2d');
+  overlay = canvas(c.width, c.height); octx = overlay.getContext('2d');
+  resizeView(); render();
+  updateHistoryUI(); updateSelInfo(); updateLayerUI(); setTool('move');
+}
+function addLayer(src) {
+  const pre = snapshot();
+  let w = src.width, h = src.height;
+  if (w > base.width || h > base.height) {
+    const k = Math.min(base.width / w, base.height / h);
+    w = Math.round(w * k); h = Math.round(h * k);
+  }
+  const c = canvas(src.width, src.height);
+  c.getContext('2d').drawImage(src, 0, 0);
+  const l = { id: uid(), c, x: Math.round((base.width - w) / 2), y: Math.round((base.height - h) / 2), w, h };
+  layers.push(l);
+  commitPre(pre);
+  setSelection([l.id]);
+  render();
+  toast('Added layer ' + layers.length);
+}
+function loadSource(src, w, h) {
+  const c = canvas(w, h); c.getContext('2d').drawImage(src, 0, 0);
+  resetStack(c);
+  toast('Canvas ' + w + ' x ' + h);
+}
+async function blobToSource(blob) {
+  try { return await createImageBitmap(blob); }
+  catch {
+    return await new Promise((res, rej) => {
+      const url = URL.createObjectURL(blob), img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); res(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('decode')); };
+      img.src = url;
+    });
+  }
+}
+async function loadBlob(blob) {
+  try {
+    const src = await blobToSource(blob);
+    if (!hasImage) loadSource(src, src.width, src.height);
+    else addLayer(src);
+    if (src.close) src.close();
+  } catch { toast('Could not decode that image'); }
+}
+function newCanvas() {
+  const w = parseInt($('#newW').value, 10), h = parseInt($('#newH').value, 10);
+  if (!w || !h || w < 1 || h < 1) return toast('Enter a valid size');
+  const bg = $('#newBg').value;
+  const c = canvas(w, h);
+  if (bg !== 'transparent') { const x = c.getContext('2d'); x.fillStyle = bg; x.fillRect(0, 0, w, h); }
+  $('#dialog').hidden = true;
+  loadSource(c, w, h);
+}
+function clearEverything() {
+  hasImage = false;
+  layers = []; texts = []; selLayer = null; selText = null; selLayers = [];
+  checkedLayers = new Set(); flattenAnnotations = false;
+  dropStack(undoStack); dropStack(redoStack); drop(gestureSnap); gestureSnap = null;
+  selection = null; crop = null; cropDrag = null;
+  base = canvas(1, 1); bctx = base.getContext('2d');
+  overlay = canvas(1, 1); octx = overlay.getContext('2d');
+  view.width = 1; view.height = 1;
+  view.style.display = 'none';
+  $('#hint').style.display = '';
+  $('#dialog').hidden = true;
+  updateHistoryUI(); updateSelInfo(); updateLayerUI(); syncAdjustUI();
+  toast('Cleared');
+}
+
+/* -------------------------------------------------------------- 18  wiring */
 function syncAdjustUI() {
   for (const k of Object.keys(DEFAULT_FILTER)) $('#' + k).value = adjust[k];
   $('#qRow').style.display = $('#fmt').value === 'image/png' ? 'none' : '';
@@ -1758,61 +1875,6 @@ function bindRange(id, key, out, xform = v => v) {
     else style[key] = xform(v);
   });
 }
-bindRange('width', 'width', 'widthOut');
-bindRange('opacity', 'opacity', 'opacityOut');
-bindRange('blobSize', 'size', 'blobSizeOut');
-bindRange('blobStrength', 'strength');
-bindRange('tolerance', 'tolerance', 'toleranceOut');
-bindRange('fxPixel', 'block', 'fxPixelOut');
-bindRange('fxBlur', 'soft', 'fxBlurOut');
-['brightness','contrast','saturate','grayscale','sepia'].forEach(k => bindRange(k, k));
-
-$('#color').addEventListener('input', e => {
-  style.color = e.target.value;
-  const t = texts.find(x => x.id === selText);
-  if (t) { const pre = snapshot(); t.color = style.color; render();
-           undoStack.push(pre); if (undoStack.length > MAX_UNDO) undoStack.shift(); redoStack.length = 0; updateHistoryUI(); }
-});
-$('#filled').addEventListener('change', e => style.filled = e.target.checked);
-$('#wandGlobal').addEventListener('change', e => wand.global = e.target.checked);
-$('#fmt').addEventListener('change', syncAdjustUI);
-$('#selAllBtn').onclick = selectAll;
-$('#selClearBtn').onclick = clearSelection;
-$('#fxPixelBtn').onclick = applyPixelate;
-$('#fxBlurBtn').onclick = applyBlur;
-$('#undoBtn').onclick = undo;
-$('#redoBtn').onclick = redo;
-$('#rotL').onclick = () => rotate(-90);
-$('#rotR').onclick = () => rotate(90);
-$('#flipH').onclick = () => flip('h');
-$('#flipV').onclick = () => flip('v');
-$('#newBtn').onclick = () => { $('#dialog').hidden = false; };
-$('#newCancel').onclick = () => { $('#dialog').hidden = true; };
-$('#newCreate').onclick = newCanvas;
-$('#newClearBtn').onclick = clearEverything;
-$('#layersToggle').onclick = toggleLayers;
-$('#layFront').onclick = () => layerMove('front');
-$('#layUp').onclick = () => layerMove('up');
-$('#layDown').onclick = () => layerMove('down');
-$('#layBack').onclick = () => layerMove('back');
-$('#layRotL').onclick = () => layerRotate(-90);
-$('#layRotR').onclick = () => layerRotate(90);
-$('#layDel').onclick = layerDelete;
-$('#layFlatten').onclick = flattenChecked;
-$('#applyAdj').onclick = applyAdjust;
-$('#blobClear').onclick = () => {
-  if (!blobs.length) return;
-  const pre = snapshot(); blobs = []; commitPre(pre); render();
-};
-
-/* ---- bundled font family + bold/italic ---- */
-const fontSel = $('#fontFamily');
-for (const [value, label] of FONT_CHOICES) {
-  const o = document.createElement('option');
-  o.value = value; o.textContent = label;
-  fontSel.appendChild(o);
-}
-fontSel.value = style.family;
 function syncStyleButtons() {
   $('#boldBtn').classList.toggle('active', style.bold);
   $('#italicBtn').classList.toggle('active', style.italic);
@@ -1822,18 +1884,6 @@ function applyToSelectedText(fn) {
   if (!t) return;
   const pre = snapshot(); fn(t); render(); commitPre(pre);
 }
-fontSel.addEventListener('change', () => {
-  style.family = fontSel.value;
-  applyToSelectedText(t => { t.family = style.family; });
-});
-$('#boldBtn').onclick = () => {
-  style.bold = !style.bold; syncStyleButtons();
-  applyToSelectedText(t => { t.bold = style.bold; });
-};
-$('#italicBtn').onclick = () => {
-  style.italic = !style.italic; syncStyleButtons();
-  applyToSelectedText(t => { t.italic = style.italic; });
-};
 // One font size, two inputs (slider for feel, number for 4K-sized type).
 function setFontSize(v) {
   v = clamp(Math.round(v) || 1, 1, 6000);
@@ -1844,87 +1894,29 @@ function setFontSize(v) {
   const t = texts.find(x => x.id === selText);
   if (t) { t.size = v; render(); }
 }
-$('#fontSize').addEventListener('input', e => setFontSize(+e.target.value));
-$('#fontSizeNum').addEventListener('input', e => setFontSize(+e.target.value));
-
-/* ---- linked resize dimensions ---- */
 function syncRatio(from) {
   if (!$('#lockRatio').checked) return;
   const w = parseInt($('#rw').value, 10), h = parseInt($('#rh').value, 10);
   if (from === 'w' && w > 0) $('#rh').value = Math.max(1, Math.round(w / aspect));
   else if (from === 'h' && h > 0) $('#rw').value = Math.max(1, Math.round(h * aspect));
 }
-$('#rw').addEventListener('input', () => syncRatio('w'));
-$('#rh').addEventListener('input', () => syncRatio('h'));
-$('#lockRatio').addEventListener('change', () => { if ($('#lockRatio').checked) syncRatio('w'); });
-$('#resetAdj').onclick = () => { adjust = { ...DEFAULT_FILTER }; syncAdjustUI(); render(); };
-$('#applyCropBtn').onclick = applyCrop;
-$('#cancelCropBtn').onclick = cancelCrop;
-$('#applyResize').onclick = () => {
-  const w = parseInt($('#rw').value, 10), h = parseInt($('#rh').value, 10);
-  if (!w || !h) return toast('Enter width and height');
-  resizeAll(w, h);
-};
-$('#fryBtn').onclick = () => deepfry($('#fryLevel').value);
-$('#bgBtn').onclick = removeBgServer;
-$('#copyBtn').onclick = copyToClipboard;
-$('#dlBtn').onclick = download;
-$('#openBtn').onclick = () => $('#file').click();
-$('#file').addEventListener('change', e => { const f = e.target.files[0]; if (f) loadBlob(f); e.target.value = ''; });
-
-/* mobile sheet */
-const panel = $('#panel'), backdrop = $('#backdrop');
 function toggleSheet(open) {
   panel.classList.toggle('open', open);
   backdrop.classList.toggle('show', open);
 }
-$('#sheetToggle').onclick = () => toggleSheet(!panel.classList.contains('open'));
-backdrop.onclick = () => toggleSheet(false);
-
-/* ============================ input: paste + drag/drop ============================ */
-const isImg = f => f && f.type && f.type.startsWith('image/');
-let pasteStamp = 0;
-function scheduleClipPaste() {
-  const t0 = Date.now();
-  setTimeout(() => { if (pasteStamp < t0 && clip) pasteClip(); }, 300);
-}
-window.addEventListener('paste', async e => {
-  pasteStamp = Date.now();
-  const dt = e.clipboardData; if (!dt) return;
-  let file = (Array.from(dt.files || []).filter(isImg))[0] || null;
-  if (!file) for (const it of dt.items || []) if (isImg(it)) { file = it.getAsFile(); break; }
-  if (file) {
-    e.preventDefault();
-    if (clip && clipSig != null) {
-      try {
-        const bmp = await createImageBitmap(file);
-        const mine = pixelSig(bmp) === clipSig;
-        if (bmp.close) bmp.close();
-        if (mine) { pasteClip(); return; }
-      } catch { /* fall through and treat it as a normal image */ }
-    }
-    loadBlob(file);
-    return;
+function nudgeSelected(dx, dy) {
+  const ids = movingIds();
+  if (!ids.length) return;
+  if (!nudgeTimer) pushUndo();               // one undo entry per burst of arrow presses
+  clearTimeout(nudgeTimer);
+  nudgeTimer = setTimeout(() => { nudgeTimer = null; }, 700);
+  for (const id of ids) {
+    const l = layers.find(z => z.id === id);
+    if (l) { l.x += dx; l.y += dy; }
   }
-  const html = dt.getData ? dt.getData('text/html') : '';
-  const m = html && html.match(/<img[^>]+src=["']([^"']+)["']/i);
-  if (m) { e.preventDefault(); fetch(m[1]).then(r => r.blob()).then(loadBlob).catch(() => toast('Could not load pasted image')); return; }
-  if (clip) { e.preventDefault(); pasteClip(); return; }
-  toast('No image found on the clipboard');
-});
-['dragenter','dragover'].forEach(ev => stage.addEventListener(ev, e => { e.preventDefault(); stage.classList.add('dragover'); }));
-['dragleave','drop'].forEach(ev => stage.addEventListener(ev, e => { e.preventDefault(); if (ev === 'drop' || e.target === stage) stage.classList.remove('dragover'); }));
-stage.addEventListener('drop', e => {
-  e.preventDefault();
-  const dt = e.dataTransfer;
-  if (dt.files && dt.files.length) return loadBlob(dt.files[0]);
-  for (const it of (dt.items || [])) if (it.type.startsWith('image/')) return loadBlob(it.getAsFile());
-});
-window.addEventListener('dragover', e => e.preventDefault());
-window.addEventListener('drop', e => e.preventDefault());
-
-/* ============================ shortcuts ============================ */
-window.addEventListener('keydown', e => {
+  render();
+}
+function onKeyDown(e) {
   const t = e.target;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
   const mod = e.ctrlKey || e.metaKey;
@@ -1961,41 +1953,171 @@ window.addEventListener('keydown', e => {
     selText = null; selLayers = []; selLayer = null; drag = null;
     updateLayerUI(); render();
   }
-});
-
-/* ============================ new canvas ============================ */
-function newCanvas() {
-  const w = parseInt($('#newW').value, 10), h = parseInt($('#newH').value, 10);
-  if (!w || !h || w < 1 || h < 1) return toast('Enter a valid size');
-  const bg = $('#newBg').value;
-  const c = canvas(w, h);
-  if (bg !== 'transparent') { const x = c.getContext('2d'); x.fillStyle = bg; x.fillRect(0, 0, w, h); }
-  $('#dialog').hidden = true;
-  loadSource(c, w, h);
 }
-function clearEverything() {
-  hasImage = false;
-  layers = []; texts = []; selLayer = null; selText = null; selLayers = [];
-  checkedLayers = new Set(); flattenAnnotations = false;
-  undoStack = []; redoStack = []; selection = null; crop = null; cropDrag = null; gestureSnap = null;
-  base = canvas(1, 1); bctx = base.getContext('2d');
-  overlay = canvas(1, 1); octx = overlay.getContext('2d');
-  view.width = 1; view.height = 1;
-  view.style.display = 'none';
-  $('#hint').style.display = '';
-  $('#dialog').hidden = true;
-  updateHistoryUI(); updateSelInfo(); updateLayerUI(); syncAdjustUI();
-  toast('Cleared');
+function scheduleClipPaste() {
+  const t0 = Date.now();
+  setTimeout(() => { if (pasteStamp < t0 && clip) pasteClip(); }, 300);
+}
+async function onPaste(e) {
+  pasteStamp = Date.now();
+  const dt = e.clipboardData; if (!dt) return;
+  let file = (Array.from(dt.files || []).filter(isImg))[0] || null;
+  if (!file) for (const it of dt.items || []) if (isImg(it)) { file = it.getAsFile(); break; }
+  if (file) {
+    e.preventDefault();
+    if (clip && clipSig != null) {
+      try {
+        const bmp = await createImageBitmap(file);
+        const mine = pixelSig(bmp) === clipSig;
+        if (bmp.close) bmp.close();
+        if (mine) { pasteClip(); return; }
+      } catch { /* fall through and treat it as a normal image */ }
+    }
+    loadBlob(file);
+    return;
+  }
+  const html = dt.getData ? dt.getData('text/html') : '';
+  const m = html && html.match(/<img[^>]+src=["']([^"']+)["']/i);
+  if (m) { e.preventDefault(); fetch(m[1]).then(r => r.blob()).then(loadBlob).catch(() => toast('Could not load pasted image')); return; }
+  if (clip) { e.preventDefault(); pasteClip(); return; }
+  toast('No image found on the clipboard');
+}
+function onDrop(e) {
+  e.preventDefault();
+  const dt = e.dataTransfer;
+  if (dt.files && dt.files.length) return loadBlob(dt.files[0]);
+  for (const it of (dt.items || [])) if (it.type.startsWith('image/')) return loadBlob(it.getAsFile());
+}
+function wire() {
+  // panel controls
+  bindRange('width', 'width', 'widthOut');
+  bindRange('opacity', 'opacity', 'opacityOut');
+  bindRange('blobSize', 'size', 'blobSizeOut');
+  bindRange('blobStrength', 'strength');
+  bindRange('tolerance', 'tolerance', 'toleranceOut');
+  bindRange('fxPixel', 'block', 'fxPixelOut');
+  bindRange('fxBlur', 'soft', 'fxBlurOut');
+  ['brightness','contrast','saturate','grayscale','sepia'].forEach(k => bindRange(k, k));
+
+  $('#color').addEventListener('input', e => {
+    style.color = e.target.value;
+    const t = texts.find(x => x.id === selText);
+    if (t) { const pre = snapshot(); t.color = style.color; render(); commitPre(pre); }
+  });
+  $('#filled').addEventListener('change', e => style.filled = e.target.checked);
+  $('#wandGlobal').addEventListener('change', e => wand.global = e.target.checked);
+  $('#fmt').addEventListener('change', syncAdjustUI);
+
+  $('#selEdit').onclick = editSelected;
+  $('#selDup').onclick = duplicateSelected;
+  $('#selDel').onclick = deleteSelected;
+  $('#selAllBtn').onclick = selectAll;
+  $('#selClearBtn').onclick = clearSelection;
+  $('#fxPixelBtn').onclick = applyPixelate;
+  $('#fxBlurBtn').onclick = applyBlur;
+  $('#undoBtn').onclick = undo;
+  $('#redoBtn').onclick = redo;
+  $('#rotL').onclick = () => rotate(-90);
+  $('#rotR').onclick = () => rotate(90);
+  $('#flipH').onclick = () => flip('h');
+  $('#flipV').onclick = () => flip('v');
+  $('#newBtn').onclick = () => { $('#dialog').hidden = false; };
+  $('#newCancel').onclick = () => { $('#dialog').hidden = true; };
+  $('#newCreate').onclick = newCanvas;
+  $('#newClearBtn').onclick = clearEverything;
+  $('#layersToggle').onclick = toggleLayers;
+  $('#layFront').onclick = () => layerMove('front');
+  $('#layUp').onclick = () => layerMove('up');
+  $('#layDown').onclick = () => layerMove('down');
+  $('#layBack').onclick = () => layerMove('back');
+  $('#layRotL').onclick = () => layerRotate(-90);
+  $('#layRotR').onclick = () => layerRotate(90);
+  $('#layDel').onclick = layerDelete;
+  $('#layFlatten').onclick = flattenChecked;
+  $('#applyAdj').onclick = applyAdjust;
+  $('#resetAdj').onclick = () => { adjust = { ...DEFAULT_FILTER }; syncAdjustUI(); render(); };
+  $('#applyCropBtn').onclick = applyCrop;
+  $('#cancelCropBtn').onclick = cancelCrop;
+  $('#blobClear').onclick = () => {
+    if (!blobs.length) return;
+    const pre = snapshot(); blobs = []; commitPre(pre); render();
+  };
+  $('#applyResize').onclick = () => {
+    const w = parseInt($('#rw').value, 10), h = parseInt($('#rh').value, 10);
+    if (!w || !h) return toast('Enter width and height');
+    resizeAll(w, h);
+  };
+  $('#fryBtn').onclick = () => deepfry($('#fryLevel').value);
+  $('#bgBtn').onclick = removeBgServer;
+  $('#copyBtn').onclick = copyToClipboard;
+  $('#dlBtn').onclick = download;
+  $('#openBtn').onclick = () => $('#file').click();
+  $('#file').addEventListener('change', e => { const f = e.target.files[0]; if (f) loadBlob(f); e.target.value = ''; });
+
+  // font family + bold/italic + the two size inputs
+  fontSel.addEventListener('change', () => {
+    style.family = fontSel.value;
+    applyToSelectedText(t => { t.family = style.family; });
+  });
+  $('#boldBtn').onclick = () => {
+    style.bold = !style.bold; syncStyleButtons();
+    applyToSelectedText(t => { t.bold = style.bold; });
+  };
+  $('#italicBtn').onclick = () => {
+    style.italic = !style.italic; syncStyleButtons();
+    applyToSelectedText(t => { t.italic = style.italic; });
+  };
+  $('#fontSize').addEventListener('input', e => setFontSize(+e.target.value));
+  $('#fontSizeNum').addEventListener('input', e => setFontSize(+e.target.value));
+
+  // linked resize dimensions
+  $('#rw').addEventListener('input', () => syncRatio('w'));
+  $('#rh').addEventListener('input', () => syncRatio('h'));
+  $('#lockRatio').addEventListener('change', () => { if ($('#lockRatio').checked) syncRatio('w'); });
+
+  // mobile sheet
+  $('#sheetToggle').onclick = () => toggleSheet(!panel.classList.contains('open'));
+  backdrop.onclick = () => toggleSheet(false);
+
+  // canvas pointer
+  view.addEventListener('pointerdown', onPointerDown);
+  view.addEventListener('pointermove', onPointerMove);
+  view.addEventListener('pointerup', onPointerUp);
+  view.addEventListener('pointercancel', onPointerCancel);
+  view.addEventListener('pointerleave', onPointerLeave);
+
+  // clipboard + drag/drop
+  window.addEventListener('paste', onPaste);
+  ['dragenter','dragover'].forEach(ev => stage.addEventListener(ev, e => { e.preventDefault(); stage.classList.add('dragover'); }));
+  ['dragleave','drop'].forEach(ev => stage.addEventListener(ev, e => { e.preventDefault(); if (ev === 'drop' || e.target === stage) stage.classList.remove('dragover'); }));
+  stage.addEventListener('drop', onDrop);
+  window.addEventListener('dragover', e => e.preventDefault());
+  window.addEventListener('drop', e => e.preventDefault());
+
+  // keyboard
+  window.addEventListener('keydown', onKeyDown);
 }
 
-/* ============================ toast ============================ */
-let toastTimer;
-function toast(msg) {
-  const el = $('#toast'); el.textContent = msg; el.classList.add('show');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2000);
+/* ---------------------------------------------------------------- 19  boot */
+function buildToolButtons() {
+  for (const [id, label] of TOOLS) {
+    const b = document.createElement('button');
+    b.textContent = label; b.dataset.tool = id; b.title = label;
+    b.addEventListener('click', () => setTool(id));
+    toolsEl.appendChild(b);
+  }
 }
-
-/* ============================ boot ============================ */
+function buildFontOptions() {
+  for (const [value, label] of FONT_CHOICES) {
+    const o = document.createElement('option');
+    o.value = value; o.textContent = label;
+    fontSel.appendChild(o);
+  }
+  fontSel.value = style.family;
+}
+buildToolButtons();
+buildFontOptions();
+wire();
 setTool('move');
 syncAdjustUI();
 updateLayerUI();
