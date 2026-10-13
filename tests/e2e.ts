@@ -548,6 +548,7 @@ async function main() {
   await evaluate(`selLayer = null; updateLayerUI();`);
   await evaluate(`document.querySelector('[data-tool=wand]').click()`);
   check("wand options show when the wand is selected", (await evaluate(`getComputedStyle(document.querySelector('#wandSec')).display`)) !== "none");
+  check("the wand's Transparent option defaults on", (await evaluate(`document.querySelector('#wandTransparent').checked`)) === true);
   const wandRes = await evaluate(`(async()=>{const before=vctx.getImageData(0,0,view.width,view.height).data;
      const bx=Math.round(view.width*0.25), by=Math.round(view.height*0.25);
      doWand({x:bx,y:by}); await new Promise(r=>setTimeout(r,50));
@@ -558,6 +559,25 @@ async function main() {
   check("wand erases the tapped flat region", wandRes.cleared > 100000 && wandRes.alphaAtTap === 0, wandRes);
   await evaluate(`undo()`); await sleep(250);
   check("wand is undoable", (await evaluate(`vctx.getImageData(2,2,1,1).data[3]`)) === 255);
+
+  // Transparent off -> the matched region is filled with the selected colour instead of cleared
+  const colorBefore = await evaluate(`document.querySelector('#color').value`);
+  const tapBefore = await evaluate(`(function(){const bx=Math.round(view.width*0.25), by=Math.round(view.height*0.25);
+     return [...vctx.getImageData(bx,by,1,1).data];})()`);
+  await evaluate(`(function(){selText=null;
+    const c=document.querySelector('#color'); c.value='#123456'; c.dispatchEvent(new Event('input'));
+    const t=document.querySelector('#wandTransparent'); t.checked=false; t.dispatchEvent(new Event('change')); return 1;})()`);
+  const wandFill = await evaluate(`(async()=>{const bx=Math.round(view.width*0.25), by=Math.round(view.height*0.25);
+     doWand({x:bx,y:by}); await new Promise(r=>setTimeout(r,50));
+     return {at:[...vctx.getImageData(bx,by,1,1).data], toast:document.querySelector('#toast').textContent};})()`, true);
+  check("wand fills the region with the selected colour when Transparent is off",
+    wandFill.at.join() === '18,52,86,255' && /Filled/.test(wandFill.toast), wandFill);
+  await evaluate(`undo()`); await sleep(250);
+  const tapAfter = await evaluate(`(function(){const bx=Math.round(view.width*0.25), by=Math.round(view.height*0.25);
+     return [...vctx.getImageData(bx,by,1,1).data];})()`);
+  check("the wand fill is undoable", tapAfter.join() === tapBefore.join(), { before: tapBefore, after: tapAfter });
+  await evaluate(`(function(){const c=document.querySelector('#color'); c.value='${colorBefore}'; c.dispatchEvent(new Event('input'));
+    const t=document.querySelector('#wandTransparent'); t.checked=true; t.dispatchEvent(new Event('change')); return 1;})()`);
 
   await evaluate(`document.querySelector('[data-tool=move]').click()`);
   check("wand options hide again", (await evaluate(`getComputedStyle(document.querySelector('#wandSec')).display`)) === "none");
@@ -662,6 +682,14 @@ async function main() {
   await shot("/tmp/m_5_mobile_sheet.png");
   await evaluate(`document.querySelector('#backdrop').click()`); await sleep(400);
   check("mobile: backdrop closes the sheet", (await evaluate(`document.querySelector('#panel').classList.contains('open')`)) === false);
+
+  // regression: after the viewport shrank, a fitted view must be re-centred (not left at the
+  // desktop pan), otherwise it overflows the stage and canvas coordinates land off-screen.
+  const mrect = await rectOf();
+  const mstage = await evaluate(`stage.getBoundingClientRect().toJSON()`);
+  check("mobile: a fitted view is re-centred inside the stage",
+    mrect.left >= mstage.left - 1 && mrect.right <= mstage.right + 1 &&
+    mrect.top >= mstage.top - 1 && mrect.bottom <= mstage.bottom + 1, { view: mrect, stage: mstage });
 
   await evaluate(`document.querySelector('[data-tool=brush]').click()`);
   const rm = await rectOf();
@@ -856,6 +884,167 @@ async function main() {
   await evaluate(`undo()`); await sleep(200);
   const nx3 = await evaluate(`Math.round(layers[0].x)`);
   check("a burst of nudges collapses into one undo step", nx3 === nx0, { expected: nx0, got: nx3 });
+
+  // ============ 11e2. zoom + pan ============
+  const z0 = await evaluate(`(function(){const r=view.getBoundingClientRect();
+    return {zoom, fit:fitZoom, rw:r.width, vw:view.width};})()`);
+  check("the view starts fitted to the stage",
+    z0.zoom <= 1 && Math.abs(z0.rw - z0.vw * z0.zoom) < 1.5 && Math.abs(z0.zoom - z0.fit) < 1e-6, z0);
+
+  const anchor = await evaluate(`(function(){const r=view.getBoundingClientRect();
+    window.__ax=r.left+r.width*0.35; window.__ay=r.top+r.height*0.4; return {x:window.__ax,y:window.__ay};})()`);
+  const beforePt = await evaluate(`(function(){const r=view.getBoundingClientRect();const s=r.width/view.width;
+    return {ix:(window.__ax-r.left)/s, iy:(window.__ay-r.top)/s};})()`);
+  await send("Input.dispatchMouseEvent", { type:"mouseWheel", x:anchor.x, y:anchor.y, deltaX:0, deltaY:-240 });
+  await sleep(150);
+  const afterPt = await evaluate(`(function(){const r=view.getBoundingClientRect();const s=r.width/view.width;
+    return {zoom, ix:(window.__ax-r.left)/s, iy:(window.__ay-r.top)/s};})()`);
+  check("the wheel zooms in", afterPt.zoom > z0.zoom * 1.05, { before: z0.zoom, after: afterPt.zoom });
+  check("the wheel keeps the image point under the cursor fixed",
+    Math.abs(afterPt.ix - beforePt.ix) < 3 && Math.abs(afterPt.iy - beforePt.iy) < 3,
+    { before: beforePt, after: afterPt });
+
+  await evaluate(`document.querySelector('#zoomFit').click()`); await sleep(80);
+  check("Fit returns to the fitted scale", Math.abs((await evaluate(`zoom`)) - z0.fit) < 1e-6, await evaluate(`zoom`));
+  await evaluate(`document.querySelector('#zoomPct').click()`); await sleep(80);
+  check("the 1:1 button sets 100%", Math.abs((await evaluate(`zoom`)) - 1) < 1e-6, await evaluate(`zoom`));
+  await evaluate(`document.querySelector('#zoomIn').click()`); await sleep(80);
+  const zi = await evaluate(`zoom`);
+  await evaluate(`document.querySelector('#zoomOut').click()`); await sleep(80);
+  const zo = await evaluate(`zoom`);
+  check("+ / - buttons step the scale", zi > 1 && zo < zi, { in: zi, out: zo });
+
+  // zoom must not break the coordinate mapping every tool depends on
+  const map = await evaluate(`(function(){const r=view.getBoundingClientRect();
+    const p=toCanvas({clientX:r.left+r.width/2, clientY:r.top+r.height/2});
+    return {s:viewScale(), zoom, cx:p.x, cy:p.y, hw:view.width/2, hh:view.height/2};})()`);
+  check("viewScale and toCanvas follow the zoom",
+    Math.abs(map.s - map.zoom) < 1e-6 && Math.abs(map.cx - map.hw) < 1 && Math.abs(map.cy - map.hh) < 1, map);
+
+  // space-drag pans the view without touching the document
+  await evaluate(`setZoom(3); selLayer=null; setSelection([]); render();`); await sleep(120);
+  const pan0 = await evaluate(`({...pan})`);
+  const layerX0 = await evaluate(`layers[0].x`);
+  const pr = await rectOf();
+  await send("Input.dispatchKeyEvent", { type:"keyDown", key:" ", code:"Space", windowsVirtualKeyCode:32, nativeVirtualKeyCode:32 });
+  await mouse("mousePressed", pr.left + pr.width * 0.5, pr.top + pr.height * 0.5, 1);
+  await mouse("mouseMoved", pr.left + pr.width * 0.5 - 90, pr.top + pr.height * 0.5 - 70, 1);
+  await mouse("mouseReleased", pr.left + pr.width * 0.5 - 90, pr.top + pr.height * 0.5 - 70, 1);
+  await send("Input.dispatchKeyEvent", { type:"keyUp", key:" ", code:"Space", windowsVirtualKeyCode:32, nativeVirtualKeyCode:32 });
+  await sleep(120);
+  const pan1 = await evaluate(`({...pan})`);
+  check("space-drag pans the view", pan1.x < pan0.x - 40 && pan1.y < pan0.y - 30, { before: pan0, after: pan1 });
+  check("panning leaves the document alone",
+    (await evaluate(`layers[0].x`)) === layerX0 && (await evaluate(`layers.length`)) === 2, { layerX: layerX0 });
+
+  // ============ 11e3. tool shortcuts, default ticks, select-on-press ============
+  await evaluate(`clearEverything()`);
+  await evaluate(`(function(){document.querySelector('#newW').value='800';document.querySelector('#newH').value='600';
+    document.querySelector('#newBg').value='#ffffff';document.querySelector('#newCreate').click();return 1;})()`);
+  await sleep(250);
+  for (let k = 0; k < 2; k++) {
+    await evaluate(`(async()=>{const b=Uint8Array.from(atob(window.__small),c=>c.charCodeAt(0));
+      const dt=new DataTransfer(); dt.items.add(new File([b],'p'+Math.random()+'.png',{type:'image/png'}));
+      window.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
+      await new Promise(r=>setTimeout(r,600));})()`, true);
+  }
+  const skTicks = await evaluate(`({n:layers.length, ticked:checkedLayers.size, ann:flattenAnnotations,
+     annBox:document.querySelectorAll('#layerList input[type=checkbox]')[0].checked})`);
+  check("every layer and the annotations row are ticked by default",
+    skTicks.n === 2 && skTicks.ticked === 2 && skTicks.ann === true && skTicks.annBox === true, skTicks);
+
+  // single-letter tool shortcuts
+  const skKeymap: [string, string][] = [["m","move"],["s","marquee"],["t","text"],["p","brush"],["h","highlight"],["l","line"],
+    ["a","arrow"],["r","rect"],["e","ellipse"],["w","wand"],["c","crop"],["b","blob"]];
+  const skBad: any[] = [];
+  for (const [k, id] of skKeymap) {
+    await evaluate(`document.activeElement && document.activeElement.blur();`);
+    const vk = k.toUpperCase().charCodeAt(0);
+    for (const type of ["keyDown", "keyUp"])
+      await send("Input.dispatchKeyEvent", { type, key: k, code: "Key" + k.toUpperCase(), windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+    await sleep(30);
+    const got = await evaluate(`tool`);
+    if (got !== id) skBad.push({ key: k, want: id, got });
+  }
+  check("single-letter shortcuts switch tools", skBad.length === 0, skBad);
+
+  // modifier keys must still win (Ctrl+A = select all, not the Arrow tool)
+  for (const type of ["keyDown", "keyUp"])
+    await send("Input.dispatchKeyEvent", { type, key: "a", code: "KeyA", modifiers: 2, windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 });
+  await sleep(60);
+  const skCtrlA = await evaluate(`({tool, sel: !!selection})`);
+  check("Ctrl+A still selects all instead of switching to the Arrow tool", skCtrlA.tool !== 'arrow' && skCtrlA.sel === true, skCtrlA);
+  await evaluate(`clearSelection(); document.querySelector('[data-tool=move]').click();`);
+
+  // a tool key typed into a text field must stay text
+  await evaluate(`(function(){const el=document.querySelector('#fname'); el.focus(); el.value=''; return 1;})()`);
+  for (const type of ["keyDown", "keyUp"])
+    await send("Input.dispatchKeyEvent", { type, key: "r", code: "KeyR", text: type === "keyDown" ? "r" : undefined,
+      unmodifiedText: "r", windowsVirtualKeyCode: 82, nativeVirtualKeyCode: 82 });
+  await sleep(60);
+  const skField = await evaluate(`({tool, val:document.querySelector('#fname').value})`);
+  check("a tool key typed into a text field is not treated as a shortcut",
+    skField.tool === 'move' && /r/.test(skField.val), skField);
+  await evaluate(`document.activeElement && document.activeElement.blur();`);
+
+  // select-on-press / deselect-on-release
+  await evaluate(`layers[0].x=80; layers[0].y=80; layers[0].w=200; layers[0].h=150;
+    layers[1].x=440; layers[1].y=340; layers[1].w=200; layers[1].h=150;
+    selText=null; selLayer=null; setSelection([]); hoverId=null; fitView(); render();`);
+  await sleep(120);
+  const skPoint = (i: number, fx: number, fy: number) => evaluate(`(function(){const l=layers[${i}];const r=view.getBoundingClientRect();const s=r.width/view.width;
+     return {x:r.left+(l.x+l.w*${fx})*s, y:r.top+(l.y+l.h*${fy})*s};})()`);
+  const skCtrlDrag = async (from: any, dx: number, dy: number) => {
+    await send("Input.dispatchMouseEvent", { type:"mousePressed", x:from.x, y:from.y, button:"left", buttons:1, clickCount:1, modifiers:2 });
+    if (dx || dy) await send("Input.dispatchMouseEvent", { type:"mouseMoved", x:from.x+dx, y:from.y+dy, button:"left", buttons:1, modifiers:2 });
+    await send("Input.dispatchMouseEvent", { type:"mouseReleased", x:from.x+dx, y:from.y+dy, button:"left", buttons:1, clickCount:1, modifiers:2 });
+    await sleep(150);
+  };
+
+  // nothing selected, ctrl press + drag (body, away from the centre block) -> selects and drags
+  const skA0 = await evaluate(`({x:Math.round(layers[0].x), y:Math.round(layers[0].y)})`);
+  await skCtrlDrag(await skPoint(0, 0.3, 0.3), 50, 40);
+  const skA1 = await evaluate(`({x:Math.round(layers[0].x), y:Math.round(layers[0].y), n:selLayers.length, sel:selLayers.includes(layers[0].id)})`);
+  check("ctrl-drag from nothing selects the layer and drags it",
+    skA1.n === 1 && skA1.sel === true && skA1.x > skA0.x + 20 && skA1.y > skA0.y + 15, { before: skA0, after: skA1 });
+
+  // two selected, ctrl press + drag on a body -> group kept, both move
+  await evaluate(`setSelection(layers.map(l => l.id)); render();`);
+  const skB0 = await evaluate(`({x0:Math.round(layers[0].x), x1:Math.round(layers[1].x)})`);
+  await skCtrlDrag(await skPoint(0, 0.3, 0.3), 30, 0);
+  const skB1 = await evaluate(`({x0:Math.round(layers[0].x), x1:Math.round(layers[1].x), n:selLayers.length})`);
+  check("ctrl-drag on an already-selected layer keeps the group and drags it",
+    skB1.n === 2 && skB1.x0 > skB0.x0 + 10 && skB1.x1 > skB0.x1 + 10, { before: skB0, after: skB1 });
+
+  // same, but grabbing the centre block (the handle path) must behave identically
+  await evaluate(`setSelection(layers.map(l => l.id)); render();`);
+  const skC0 = await evaluate(`({x1:Math.round(layers[1].x)})`);
+  await skCtrlDrag(await skPoint(1, 0.5, 0.5), 24, 0);
+  const skC1 = await evaluate(`({x1:Math.round(layers[1].x), n:selLayers.length})`);
+  check("ctrl-drag on the centre grab block also keeps the group", skC1.n === 2 && skC1.x1 > skC0.x1 + 8, { before: skC0, after: skC1 });
+
+  // two selected, ctrl click with no drag -> toggles that one back off
+  await evaluate(`setSelection(layers.map(l => l.id)); render();`);
+  await skCtrlDrag(await skPoint(1, 0.3, 0.3), 0, 0);
+  const skD1 = await evaluate(`({n:selLayers.length, has0:selLayers.includes(layers[0].id), has1:selLayers.includes(layers[1].id)})`);
+  check("ctrl-click with no drag toggles the layer back off",
+    skD1.n === 1 && skD1.has0 === true && skD1.has1 === false, skD1);
+
+  // ...and the centre block behaves the same for the toggle
+  await evaluate(`setSelection(layers.map(l => l.id)); render();`);
+  await skCtrlDrag(await skPoint(0, 0.5, 0.5), 0, 0);
+  const skE1 = await evaluate(`({n:selLayers.length, has0:selLayers.includes(layers[0].id), has1:selLayers.includes(layers[1].id)})`);
+  check("ctrl-click with no drag on the centre block toggles off too",
+    skE1.n === 1 && skE1.has0 === false && skE1.has1 === true, skE1);
+
+  // a click that never moves must not create an undo step
+  await evaluate(`setSelection([layers[0].id]); render();`);
+  const skU0 = await evaluate(`undoStack.length`);
+  const skPtD = await skPoint(0, 0.3, 0.3);
+  await mouse("mousePressed", skPtD.x, skPtD.y, 1); await mouse("mouseReleased", skPtD.x, skPtD.y, 1);
+  await sleep(120);
+  const skU1 = await evaluate(`undoStack.length`);
+  check("a click that does not drag adds no undo step", skU1 === skU0, { before: skU0, after: skU1 });
 
   // ============ 11f. adjust acts on the final image / the selection ============
   // Self-contained: builds its own fixture with explicit geometry so the sample

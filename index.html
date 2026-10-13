@@ -51,15 +51,19 @@
 
   main { flex:1; display:flex; min-height:0; }
   #stage {
-    flex:1; min-width:0; position:relative; overflow:hidden; padding:16px;
-    display:flex; align-items:center; justify-content:center;
+    flex:1; min-width:0; position:relative; overflow:hidden;
     background:repeating-conic-gradient(#2a2b2f 0% 25%, #26272b 0% 50%) 50%/22px 22px;
     touch-action:none;
   }
   #stage.dragover { outline:2px dashed var(--accent); outline-offset:-8px; }
-  #view { display:none; max-width:100%; max-height:100%; background:#000; touch-action:none; cursor:crosshair;
-          -webkit-user-drag:none; user-select:none;
-          box-shadow:0 0 0 1px #0007, 0 10px 34px #0009; }
+  #view { display:none; position:absolute; left:0; top:0; transform-origin:0 0; background:#000;
+          touch-action:none; cursor:crosshair;
+          -webkit-user-drag:none; user-select:none; box-shadow:0 0 0 1px #0007; }
+  #zoomHud { position:absolute; left:10px; bottom:10px; z-index:8; display:flex; gap:4px;
+             background:#111c; border:1px solid var(--line); border-radius:8px; padding:3px;
+             backdrop-filter:blur(4px); }
+  #zoomHud button { min-height:26px; padding:2px 8px; font-size:12px; }
+  #zoomPct { min-width:52px; }
   #hint { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
           text-align:center; color:var(--muted); font-size:15px; pointer-events:none; padding:24px; }
   #hint b { color:var(--fg); }
@@ -174,6 +178,12 @@
 <main>
   <div id="stage">
     <canvas id="view" draggable="false"></canvas>
+    <div id="zoomHud" hidden>
+      <button id="zoomOut" title="Zoom out (-)">−</button>
+      <button id="zoomPct" title="Actual size (100%)">100%</button>
+      <button id="zoomIn" title="Zoom in (+)">+</button>
+      <button id="zoomFit" title="Fit to window (0)">Fit</button>
+    </div>
     <div id="hint">Drop an image, paste with <b>Ctrl+V</b>, or tap <b>Open</b></div>
     <div id="selbar" hidden>
       <button id="selEdit">Edit</button>
@@ -228,7 +238,8 @@
       <h3>Magic wand</h3>
       <label>Tolerance <input type="range" id="tolerance" min="0" max="100" value="22"><output id="toleranceOut">22</output></label>
       <label>All similar <input type="checkbox" id="wandGlobal"></label>
-      <div class="note">Tap the area to erase. Raise tolerance to remove more shades at once.</div>
+      <label>Transparent <input type="checkbox" id="wandTransparent" checked></label>
+      <div class="note">Tap an area to replace it. Transparent clears it to see-through; untick to fill it with the Color above. Raise tolerance to match more shades at once.</div>
     </section>
 
     <section id="cropSec" hidden>
@@ -385,6 +396,8 @@ const MAX_UNDO = 12;
 // it only ever costs history depth, never correctness.
 const MAX_HISTORY_BYTES = 384 << 20;
 const HANDLE_PX = 26;            // crop / layer handle hit size, in screen px
+const ZOOM_MIN = 0.05, ZOOM_MAX = 16, FIT_PAD = 24;   // view zoom range and fit margin, in CSS px
+const PAN_MARGIN = 48;           // keep at least this much of the image on screen when panning
 const DEFAULT_FILTER = { brightness:100, contrast:100, saturate:100, grayscale:0, sepia:0 };
 
 // Bundled faces only (see fonts/LICENSE.txt) — nothing relies on the host machine.
@@ -397,10 +410,11 @@ const FONT_CHOICES = [
 ];
 
 const TOOLS = [
-  ['move','Move'], ['marquee','Select'], ['text','Text'], ['brush','Pen'], ['highlight','Highlight'],
-  ['line','Line'], ['arrow','Arrow'], ['rect','Rect'], ['ellipse','Ellipse'],
-  ['wand','Wand'], ['crop','Crop'], ['blob','Blob'],
+  ['move','Move','m'], ['marquee','Select','s'], ['text','Text','t'], ['brush','Pen','p'], ['highlight','Highlight','h'],
+  ['line','Line','l'], ['arrow','Arrow','a'], ['rect','Rect','r'], ['ellipse','Ellipse','e'],
+  ['wand','Wand','w'], ['crop','Crop','c'], ['blob','Blob','b'],
 ];
+const TOOL_KEYS = {};            // single-letter shortcut -> tool id, filled in by buildToolButtons()
 
 const FRY = {
   light:  { q:72, passes:1, sat:2.2, con:1.25, nz:10, sh:0.55 },
@@ -414,6 +428,7 @@ const $ = s => document.querySelector(s);
 const view = $('#view'), vctx = view.getContext('2d'), stage = $('#stage');
 const panel = $('#panel'), backdrop = $('#backdrop');
 const toolsEl = $('#tools'), fontSel = $('#fontFamily'), layerList = $('#layerList');
+const zoomHud = $('#zoomHud'), zoomPct = $('#zoomPct');
 
 /* --------------------------------------------------------------- 3  state */
 // Pixel surfaces: `base` is the background, `overlay` holds shapes (always above
@@ -436,7 +451,7 @@ let selText = null;
 
 let blobs = [];                  // distort markers: UI only, never exported
 const style = { color:'#ff3b30', width:6, opacity:1, filled:false, fontSize:48, family:'Anton', bold:false, italic:false };
-const wand = { tolerance:22, global:false };
+const wand = { tolerance:22, global:false, transparent:true };
 const fx = { block:14, soft:8 };     // pixelate block size, blur radius
 const blobCfg = { size:160, strength:60 };
 let adjust = { ...DEFAULT_FILTER };
@@ -453,6 +468,14 @@ let cropDrag = null;
 let selection = null;            // {x,y,w,h}; effects target this, else the whole image
 let hoverId = null;              // layer under the cursor (desktop hover feedback)
 let aspect = 1;                  // base.width / base.height, for the locked resize
+let zoom = 1, fitZoom = 1, atFit = true;   // CSS px per image px, and whether we are fitted
+const pan = { x: 0, y: 0 };                // screen offset of the image's top-left corner
+let spaceDown = false, panDrag = null;     // space / middle-drag panning
+
+// render cache (see §7): the static stack is only re-composited when its signature changes
+let cacheCanvas = null, cacheCtx = null, cacheSigVal = null;
+let paintSeq = 0;                // bumped by the few in-place pixel writes so the cache notices
+let frameQueued = false;
 
 let undoStack = [], redoStack = [], gestureSnap = null;
 let nudgeTimer = null, toastTimer = null;
@@ -460,10 +483,32 @@ let nudgeTimer = null, toastTimer = null;
 /* ---------------------------------------------------------------- 4  util */
 const uid = () => Math.random().toString(36).slice(2, 9);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const hexToRgb = hex => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex));
+  if (!m) return [0, 0, 0];
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
 const canvas = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
 const clone = src => { const c = canvas(src.width, src.height); c.getContext('2d').drawImage(src, 0, 0); return c; };
 const textLines = t => String(t.text).split('\n');
 const isImg = f => !!(f && f.type && f.type.startsWith('image/'));
+// Stable per-canvas identity, used by the render cache's scene signature.
+const canvasIds = new WeakMap(); let canvasIdSeq = 0;
+const cid = c => { let v = canvasIds.get(c); if (v === undefined) { v = ++canvasIdSeq; canvasIds.set(c, v); } return v; };
+
+// True when a keystroke belongs to a text field, so shortcuts must not hijack it.
+// Sliders / checkboxes / colour swatches are NOT typing targets, so tool keys still work
+// after touching one, while arrows and space stay with the control itself.
+function isTypingTarget(el) {
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  const tag = el.tagName;
+  if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (tag !== 'INPUT') return false;
+  const type = (el.type || 'text').toLowerCase();
+  return !['range', 'checkbox', 'radio', 'color', 'file', 'button', 'submit', 'reset'].includes(type);
+}
 
 function toast(msg) {
   const el = $('#toast'); el.textContent = msg; el.classList.add('show');
@@ -594,6 +639,20 @@ function setSelection(ids) {
   if (selLayer) selText = null;
   updateLayerUI();
 }
+// Press-time selection for a layer drag, shared by the layer body and the centre grab block.
+// An additive press on something already selected is deferred: it is toggled off on pointerup,
+// and only if the gesture never moved (so ctrl-drag still drags the whole group).
+function selectForDrag(id, additive) {
+  const inSel = selLayers.includes(id);
+  if (additive) {
+    if (inSel) return id;
+    setSelection([...selLayers, id]);
+    return null;
+  }
+  if (!inSel) setSelection([id]);
+  else if (selLayer !== id) { selLayer = id; updateLayerUI(); }
+  return null;
+}
 
 /* -------------------------------------------------------------- 7  render */
 const viewScale = () => {
@@ -674,6 +733,74 @@ function drawStack(ctx) {
   ctx.drawImage(overlay, 0, 0);
   for (const t of texts) paintText(ctx, t);
 }
+// The stack changes far less often than the view is redrawn (a drag moves a preview, not the
+// stack), so composite it once into a reusable canvas, and only when its signature changes.
+function sceneSig() {
+  let s = base.width + 'x' + base.height + '\u0001' + cid(base) + '\u0001' + cid(overlay) + '\u0001' + paintSeq;
+  for (const l of layers) s += '\u0002' + cid(l.c) + ',' + Math.round(l.x) + ',' + Math.round(l.y) + ',' + Math.round(l.w) + ',' + Math.round(l.h);
+  s += '\u0003';
+  for (const t of texts) s += '\u0002' + t.x.toFixed(1) + ',' + t.y.toFixed(1) + ',' + t.size + ',' + t.color + ',' + t.opacity + ',' + (t.bold ? 1 : 0) + (t.italic ? 1 : 0) + ',' + t.family + ',' + t.text;
+  return s;
+}
+function stackCanvas() {
+  const sig = sceneSig();
+  if (cacheCanvas && sig === cacheSigVal) return cacheCanvas;
+  if (!cacheCanvas || cacheCanvas.width !== base.width || cacheCanvas.height !== base.height) {
+    cacheCanvas = canvas(base.width, base.height);
+    cacheCtx = cacheCanvas.getContext('2d');
+  }
+  cacheCtx.setTransform(1, 0, 0, 1, 0, 0);
+  cacheCtx.globalAlpha = 1; cacheCtx.filter = 'none';
+  cacheCtx.clearRect(0, 0, cacheCanvas.width, cacheCanvas.height);
+  drawStack(cacheCtx);
+  cacheSigVal = sig;
+  return cacheCanvas;
+}
+// pointermove fires at input rate (often well above 60 Hz); coalesce preview redraws to one/frame.
+function scheduleRender() {
+  if (frameQueued) return;
+  frameQueued = true;
+  requestAnimationFrame(() => { frameQueued = false; render(); });
+}
+/* Zoom is a CSS transform on the full-resolution canvas: panning is then just a transform update,
+ * and overlay line widths already divide by viewScale() so handles stay the same size on screen. */
+function stageSize() { const r = stage.getBoundingClientRect(); return { w: r.width, h: r.height }; }
+function fitScale() {
+  const { w, h } = stageSize();
+  return clamp(Math.min((w - 2 * FIT_PAD) / view.width, (h - 2 * FIT_PAD) / view.height), 0.0005, 1);
+}
+function clampZoom(z) { return clamp(z, Math.min(ZOOM_MIN, fitZoom), ZOOM_MAX); }
+function clampPan() {
+  // Keep at least PAN_MARGIN px of the image on screen, without forcing it to the centre -
+  // centring here would fight cursor-anchored wheel zoom whenever the image is small.
+  const { w, h } = stageSize();
+  const iw = view.width * zoom, ih = view.height * zoom;
+  pan.x = clamp(pan.x, PAN_MARGIN - iw, w - PAN_MARGIN);
+  pan.y = clamp(pan.y, PAN_MARGIN - ih, h - PAN_MARGIN);
+}
+function applyView() {
+  view.style.width = view.width + 'px';
+  view.style.height = view.height + 'px';
+  view.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
+  atFit = Math.abs(zoom - fitZoom) < 1e-9;
+  zoomPct.textContent = Math.round(zoom * 100) + '%';
+}
+function fitView(redraw = true) {
+  fitZoom = fitScale(); zoom = fitZoom;
+  const { w, h } = stageSize();
+  pan.x = (w - view.width * zoom) / 2; pan.y = (h - view.height * zoom) / 2;
+  clampPan(); applyView();
+  if (redraw) render();
+}
+function setZoom(z, cx, cy, redraw = true) {
+  const { w, h } = stageSize();
+  const ax = cx === undefined ? w / 2 : cx, ay = cy === undefined ? h / 2 : cy;
+  const ix = (ax - pan.x) / zoom, iy = (ay - pan.y) / zoom;   // image point under the anchor
+  zoom = clampZoom(z);
+  pan.x = ax - ix * zoom; pan.y = ay - iy * zoom;             // keep it under the anchor
+  clampPan(); applyView();
+  if (redraw) render();
+}
 function drawLayerOutline(l, isPrimary) {
   const s = viewScale(), t = 16 / s;
   vctx.save();
@@ -740,15 +867,22 @@ function render() {
   vctx.setTransform(1, 0, 0, 1, 0, 0);
   vctx.filter = 'none';
   vctx.clearRect(0, 0, view.width, view.height);
-  drawStack(vctx);
+  const stack = stackCanvas();
   // Adjust applies to the FINAL image, or only inside the selection if there is one.
   const f = filterCSS();
-  if (f !== 'none') {
+  if (f === 'none') {
+    vctx.drawImage(stack, 0, 0);
+  } else if (selection) {
+    vctx.drawImage(stack, 0, 0);
     vctx.save();
-    if (selection) { vctx.beginPath(); vctx.rect(selection.x, selection.y, selection.w, selection.h); vctx.clip(); }
+    vctx.beginPath(); vctx.rect(selection.x, selection.y, selection.w, selection.h); vctx.clip();
     vctx.filter = f;
-    drawStack(vctx);
+    vctx.drawImage(stack, 0, 0);
     vctx.restore();
+    vctx.filter = 'none';
+  } else {
+    vctx.filter = f;
+    vctx.drawImage(stack, 0, 0);
     vctx.filter = 'none';
   }
   const sel = texts.find(t => t.id === selText);
@@ -771,7 +905,7 @@ function setTool(id) {
   if (tool === 'crop' && id !== 'crop') cancelCrop();
   tool = id;
   [...toolsEl.children].forEach(b => b.classList.toggle('active', b.dataset.tool === id));
-  view.style.cursor = id === 'text' ? 'text' : ((id === 'move' || id === 'marquee') ? 'default' : 'crosshair');
+  applyCursor();
   $('#fontRow').style.display = (id === 'text' || id === 'move') ? '' : 'none';
   $('#wandSec').hidden = id !== 'wand';
   $('#cropSec').hidden = !crop;
@@ -869,7 +1003,7 @@ function layerResizeTo(l, d, p) {
 }
 function startTextDrag(t, p, e) {
   beginGesture();
-  drag = { kind:'text', id:t.id, ox:p.x - t.x, oy:p.y - t.y };
+  drag = { kind:'text', id:t.id, ox:p.x - t.x, oy:p.y - t.y, startX:p.x, startY:p.y, moved:false };
   try { view.setPointerCapture(e.pointerId); } catch {}
   render();
 }
@@ -879,6 +1013,7 @@ function onPointerDown(e) {
   const p = toCanvas(e);
   const capture = () => { try { view.setPointerCapture(e.pointerId); } catch {} };
 
+  if (spaceDown || e.button === 1) { beginPan(e); return; }
   if (tool === 'crop') { cropDown(e, p); capture(); return; }
   if (tool === 'wand') { doWand(p); return; }
   if (tool === 'marquee') {
@@ -893,12 +1028,12 @@ function onPointerDown(e) {
   }
   if (tool === 'blob') {
     const hit = blobs.find(b => Math.hypot(p.x - b.x, p.y - b.y) <= b.r);
-    if (hit) { beginGesture(); drag = { kind:'blob', id:hit.id }; }
+    if (hit) { beginGesture(); drag = { kind:'blob', id:hit.id, startX:p.x, startY:p.y, moved:false }; }
     else {
       beginGesture();
       const b = { id: uid(), x:p.x, y:p.y, r: blobCfg.size, str: blobCfg.strength / 100 };
       blobs.push(b);
-      drag = { kind:'blob', id:b.id };
+      drag = { kind:'blob', id:b.id, created:true, startX:p.x, startY:p.y, moved:false };
     }
     capture(); render(); return;
   }
@@ -915,35 +1050,30 @@ function onPointerDown(e) {
     const hh = handleHit(e);
     if (hh) {
       if (hh.kind === 'move') {
-        if (selLayers.includes(hh.id)) { selLayer = hh.id; updateLayerUI(); }
-        else setSelection([hh.id]);
+        const toggleId = selectForDrag(hh.id, e.ctrlKey || e.metaKey || e.shiftKey);
         beginGesture();
-        drag = { kind:'layer', ox:p.x, oy:p.y,
+        drag = { kind:'layer', ox:p.x, oy:p.y, startX:p.x, startY:p.y, moved:false, toggleId,
                  orig: movingIds().map(id => { const q = layers.find(z => z.id === id); return { id, x:q.x, y:q.y }; }) };
         capture(); render(); return;
       }
       const l = primaryLayer();
       beginGesture();
-      drag = { kind:'layerResize', id:l.id, handle:hh.handle, ox:l.x, oy:l.y, ow:l.w, oh:l.h };
+      drag = { kind:'layerResize', id:l.id, handle:hh.handle, ox:l.x, oy:l.y, ow:l.w, oh:l.h, startX:p.x, startY:p.y, moved:false };
       capture(); render(); return;
     }
     const hit = hitText(p);
     if (hit) {
       selText = hit.id; selLayer = null; beginGesture();
-      drag = { kind:'text', id:hit.id, ox:p.x - hit.x, oy:p.y - hit.y };
+      drag = { kind:'text', id:hit.id, ox:p.x - hit.x, oy:p.y - hit.y, startX:p.x, startY:p.y, moved:false };
       capture(); updateLayerUI(); render(); return;
     }
     selText = null;
     const lh = hitLayer(p);
     if (lh) {
       if (selLayers.length && !selLayers.includes(selLayer)) selLayers = selLayer ? [selLayer] : [];
-      const additive = e.ctrlKey || e.metaKey || e.shiftKey;
-      const inSel = selLayers.includes(lh.id);
-      if (additive) setSelection(inSel ? selLayers.filter(x => x !== lh.id) : [...selLayers, lh.id]);
-      else if (!inSel) setSelection([lh.id]);                    // clicking outside the group reselects
-      else if (selLayer !== lh.id) { selLayer = lh.id; updateLayerUI(); }   // keep the group, retarget primary
+      const toggleId = selectForDrag(lh.id, e.ctrlKey || e.metaKey || e.shiftKey);
       beginGesture();
-      drag = { kind:'layer', ox:p.x, oy:p.y,
+      drag = { kind:'layer', ox:p.x, oy:p.y, startX:p.x, startY:p.y, moved:false, toggleId,
                orig: movingIds().map(id => { const q = layers.find(z => z.id === id); return { id, x:q.x, y:q.y }; }) };
       capture(); render(); return;
     }
@@ -958,14 +1088,22 @@ function onPointerDown(e) {
 }
 function onPointerMove(e) {
   if (!hasImage) return;
+  if (panDrag) {
+    pan.x = panDrag.px + (e.clientX - panDrag.x);
+    pan.y = panDrag.py + (e.clientY - panDrag.y);
+    clampPan(); applyView();
+    return;
+  }
   const p = toCanvas(e);
   if (tool === 'move' && !drag && !cropDrag) {
     const stack = layersAt(p);
     const top = stack.length ? stack[0].id : null;
-    if (top !== hoverId) { hoverId = top; render(); }
+    if (top !== hoverId) { hoverId = top; scheduleRender(); }
   }
-  if (cropDrag) { applyCropDrag(p); render(); return; }
+  if (cropDrag) { applyCropDrag(p); scheduleRender(); return; }
   if (!drag) return;
+  // any real movement means this was a drag, not a click
+  if (drag.startX !== undefined && (Math.abs(p.x - drag.startX) > 2 || Math.abs(p.y - drag.startY) > 2)) drag.moved = true;
   if (drag.kind === 'text') {
     const t = texts.find(x => x.id === drag.id); if (!t) return;
     t.x = clamp(p.x - drag.ox, -50, base.width); t.y = clamp(p.y - drag.oy, -50, base.height);
@@ -988,15 +1126,21 @@ function onPointerMove(e) {
     if (s.type === 'brush' || s.type === 'highlight') s.points.push(p);
     else { s.x2 = p.x; s.y2 = p.y; }
   }
-  render();
+  scheduleRender();
 }
 function onPointerUp() {
+  if (panDrag) { panDrag = null; applyCursor(); return; }
   if (cropDrag) { cropDrag = null; if (crop && (crop.w < 12 || crop.h < 12)) crop = defaultCrop(); $('#cropSec').hidden = !crop; commitGesture(true); render(); return; }
   if (!drag) return;
   const d = drag; drag = null;
-  if (d.kind === 'text') { commitGesture(true); render(); return; }
-  if (d.kind === 'blob') { commitGesture(true); render(); return; }
-  if (d.kind === 'layer' || d.kind === 'layerResize') { commitGesture(true); updateLayerUI(); render(); return; }
+  if (d.kind === 'text') { commitGesture(!!d.moved); render(); return; }
+  if (d.kind === 'blob') { commitGesture(!!d.moved || !!d.created); render(); return; }
+  if (d.kind === 'layer' || d.kind === 'layerResize') {
+    // additive click that never moved = toggle the layer off the selection
+    if (d.kind === 'layer' && d.toggleId && !d.moved) setSelection(selLayers.filter(x => x !== d.toggleId));
+    commitGesture(!!d.moved);
+    updateLayerUI(); render(); return;
+  }
   if (d.kind === 'marquee') {
     const r = marqueeRect(d);
     selection = (r.w < 6 || r.h < 6) ? null : r;
@@ -1007,11 +1151,21 @@ function onPointerUp() {
   if (!moved) { commitGesture(false); render(); return; }
   ownOverlay();                    // history may still own this exact canvas
   paintShape(octx, s);
+  paintSeq++;
   commitGesture(true);
   render();
 }
-function onPointerCancel() { drag = null; cropDrag = null; render(); }
-function onPointerLeave() { if (hoverId) { hoverId = null; render(); } }
+function onPointerCancel() { drag = null; cropDrag = null; panDrag = null; applyCursor(); render(); }
+function onPointerLeave() { if (hoverId) { hoverId = null; scheduleRender(); } }
+function applyCursor() {
+  if (panDrag || spaceDown) { view.style.cursor = 'grab'; return; }
+  view.style.cursor = tool === 'text' ? 'text' : ((tool === 'move' || tool === 'marquee') ? 'default' : 'crosshair');
+}
+function beginPan(e) {
+  panDrag = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+  try { view.setPointerCapture(e.pointerId); } catch {}
+  applyCursor();
+}
 
 /* ------------------------------------------------------------ 9  text */
 function selectText(t) {
@@ -1144,7 +1298,7 @@ function applyCompositeEffect(kind) {
     pc.clearRect(0, 0, r.w, r.h); pc.drawImage(t, 0, 0);
   }
   const l = { id: uid(), c: patch, x: r.x, y: r.y, w: r.w, h: r.h };
-  layers.push(l);
+  layers.push(l); checkedLayers.add(l.id);
   setSelection([l.id]);
   render();
   toast((kind === 'pixelate' ? 'Pixelated' : 'Blurred') + ' selection');
@@ -1164,7 +1318,7 @@ function applyAdjust() {
   const patch = canvas(r.w, r.h);
   patch.getContext('2d').drawImage(src, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
   const l = { id: uid(), c: patch, x: r.x, y: r.y, w: r.w, h: r.h };
-  layers.push(l);
+  layers.push(l); checkedLayers.add(l.id);
   setSelection([l.id]);
   adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
   render();
@@ -1216,7 +1370,7 @@ function pasteClip() {
   const pre = snapshot();
   const off = clip.region ? 0 : 24;
   const l = { id: uid(), c: clone(clip.c), x: clip.x + off, y: clip.y + off, w: clip.w, h: clip.h };
-  layers.push(l);
+  layers.push(l); checkedLayers.add(l.id);
   commitPre(pre);
   setSelection([l.id]);
   render();
@@ -1241,7 +1395,8 @@ function flattenChecked() {
     texts = []; selText = null;
   }
   adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
-  checkedLayers = new Set(); flattenAnnotations = false;
+  checkedLayers = new Set(layers.map(l => l.id));   // survivors are ticked again by default
+  if (ann) flattenAnnotations = false;              // annotations were just baked in
   commitPre(pre);
   setSelection(selLayers);
   render();
@@ -1260,16 +1415,19 @@ function doWand(p) {
          : selection)
     : null;
   const img = tctx.getImageData(0, 0, tgt.width, tgt.height);
-  const filled = floodFill(img, tgt.width, tgt.height, x, y, wand.tolerance, wand.global, b);
+  const fill = wand.transparent ? null : hexToRgb(style.color);
+  const filled = floodFill(img, tgt.width, tgt.height, x, y, wand.tolerance, wand.global, b, fill);
   if (!filled) { toast('Nothing matched — raise tolerance'); return; }
   pushUndo();
   // history may still own this canvas; take a private copy before writing pixels
   if (l) { ownLayer(l); l.c.getContext('2d').putImageData(img, 0, 0); }
   else   { ownBase();  bctx.putImageData(img, 0, 0); }
+  paintSeq++;
   render();
-  toast('Erased ' + filled.toLocaleString() + ' px');
+  toast((wand.transparent ? 'Cleared ' : 'Filled ') + filled.toLocaleString() + ' px');
 }
-function floodFill(img, w, h, sx, sy, tolerance, globalMode, b) {
+// `fill` is an [r,g,b] colour to paint the matched region, or null to clear it to transparent.
+function floodFill(img, w, h, sx, sy, tolerance, globalMode, b, fill) {
   const d = img.data;
   const x0 = b ? Math.max(0, b.x) : 0, y0 = b ? Math.max(0, b.y) : 0;
   const x1 = b ? Math.min(w, b.x + b.w) : w, y1 = b ? Math.min(h, b.y + b.h) : h;
@@ -1283,11 +1441,15 @@ function floodFill(img, w, h, sx, sy, tolerance, globalMode, b) {
     const dr = d[i] - tr, dg = d[i + 1] - tg, db = d[i + 2] - tb;
     return dr * dr + dg * dg + db * db <= th2;
   };
+  const put = i => {
+    if (fill) { d[i] = fill[0]; d[i + 1] = fill[1]; d[i + 2] = fill[2]; d[i + 3] = 255; }
+    else d[i + 3] = 0;
+  };
   if (globalMode) {
     let n = 0;
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
       const i = (y * w + x) * 4;
-      if (d[i + 3] !== 0 && eq(i)) { d[i + 3] = 0; n++; }
+      if (d[i + 3] !== 0 && eq(i)) { put(i); n++; }
     }
     return n;
   }
@@ -1304,7 +1466,7 @@ function floodFill(img, w, h, sx, sy, tolerance, globalMode, b) {
     xr--;
     for (let xi = xl; xi <= xr; xi++) {
       const k = y * w + xi;
-      seen[k] = 1; d[k * 4 + 3] = 0; n++;
+      seen[k] = 1; put(k * 4); n++;
       if (y > y0 && !seen[k - w] && eq((k - w) * 4)) { stack.push(xi, y - 1); }
       if (y < y1 - 1 && !seen[k + w] && eq((k + w) * 4)) { stack.push(xi, y + 1); }
     }
@@ -1400,6 +1562,7 @@ function layerDelete() {
   if (!ids.length) return;
   const pre = snapshot();
   layers = layers.filter(l => !ids.includes(l.id));
+  for (const id of ids) checkedLayers.delete(id);
   selLayers = []; selLayer = null;
   commitPre(pre);
   updateLayerUI(); render();
@@ -1534,6 +1697,7 @@ function bakeTexts() {
   ownOverlay();                    // history may still own this exact canvas
   for (const t of texts) paintText(octx, t);
   texts = []; selText = null;
+  paintSeq++;
 }
 function rotCanvas(src, deg) {
   const t = canvas(src.height, src.width), c = t.getContext('2d');
@@ -1765,12 +1929,16 @@ function syncOverlaySize() {
   }
 }
 function resizeView() {
+  const changed = view.width !== base.width || view.height !== base.height;
   view.width = base.width; view.height = base.height;
   view.style.display = 'block';
   $('#hint').style.display = 'none';
   $('#rw').value = base.width; $('#rh').value = base.height;
   aspect = base.width / base.height;
   syncOverlaySize();
+  zoomHud.hidden = false;
+  if (changed) fitView(false);          // a new size starts fitted...
+  else { clampPan(); applyView(); }     // ...an unchanged size keeps the user's zoom
 }
 function setBase(c) {
   base = c; bctx = base.getContext('2d');
@@ -1782,7 +1950,7 @@ function resetStack(c) {
   dropStack(undoStack); dropStack(redoStack); drop(gestureSnap); gestureSnap = null;
   texts = []; selText = null; crop = null; cropDrag = null; selection = null;
   layers = []; selLayer = null; selLayers = [];
-  checkedLayers = new Set(); flattenAnnotations = false; clip = null; clipSig = null;
+  checkedLayers = new Set(); flattenAnnotations = true; clip = null; clipSig = null;
   adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
   base = c; bctx = c.getContext('2d');
   overlay = canvas(c.width, c.height); octx = overlay.getContext('2d');
@@ -1799,7 +1967,7 @@ function addLayer(src) {
   const c = canvas(src.width, src.height);
   c.getContext('2d').drawImage(src, 0, 0);
   const l = { id: uid(), c, x: Math.round((base.width - w) / 2), y: Math.round((base.height - h) / 2), w, h };
-  layers.push(l);
+  layers.push(l); checkedLayers.add(l.id);
   commitPre(pre);
   setSelection([l.id]);
   render();
@@ -1841,7 +2009,7 @@ function newCanvas() {
 function clearEverything() {
   hasImage = false;
   layers = []; texts = []; selLayer = null; selText = null; selLayers = [];
-  checkedLayers = new Set(); flattenAnnotations = false;
+  checkedLayers = new Set(); flattenAnnotations = true;
   dropStack(undoStack); dropStack(redoStack); drop(gestureSnap); gestureSnap = null;
   selection = null; crop = null; cropDrag = null;
   base = canvas(1, 1); bctx = base.getContext('2d');
@@ -1850,6 +2018,7 @@ function clearEverything() {
   view.style.display = 'none';
   $('#hint').style.display = '';
   $('#dialog').hidden = true;
+  zoom = fitZoom = 1; pan.x = pan.y = 0; atFit = true; zoomHud.hidden = true; cacheSigVal = null;
   updateHistoryUI(); updateSelInfo(); updateLayerUI(); syncAdjustUI();
   toast('Cleared');
 }
@@ -1917,9 +2086,20 @@ function nudgeSelected(dx, dy) {
   render();
 }
 function onKeyDown(e) {
-  const t = e.target;
-  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  const el = e.target;
+  if (isTypingTarget(el)) return;                 // never hijack real text entry
+  const onControl = !!(el && (el.tagName === 'INPUT' || el.tagName === 'SELECT'));
   const mod = e.ctrlKey || e.metaKey;
+  // single-letter tool shortcuts (plain keys only, so Ctrl+C/V/S/A/Z are untouched)
+  if (!mod && !e.altKey && !e.shiftKey) {
+    const toolId = TOOL_KEYS[e.key.toLowerCase()];
+    if (toolId) { e.preventDefault(); setTool(toolId); return; }
+  }
+  if ((e.key === ' ' || e.code === 'Space') && !onControl) { e.preventDefault(); if (!spaceDown) { spaceDown = true; applyCursor(); } return; }
+  if (!mod && (e.key === '+' || e.key === '=')) { e.preventDefault(); if (hasImage) setZoom(zoom * 1.25); return; }
+  if (!mod && (e.key === '-' || e.key === '_')) { e.preventDefault(); if (hasImage) setZoom(zoom / 1.25); return; }
+  if (!mod && e.key === '0') { e.preventDefault(); if (hasImage) fitView(); return; }
+  if (!mod && e.key === '1') { e.preventDefault(); if (hasImage) setZoom(1); return; }
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
   else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
   else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); if (hasImage) download(); }
@@ -1936,13 +2116,13 @@ function onKeyDown(e) {
     scheduleClipPaste();
   }
   else if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); selectAll(); }
-  else if (e.key.startsWith('Arrow') && movingIds().length) {
+  else if (!onControl && e.key.startsWith('Arrow') && movingIds().length) {
     e.preventDefault();
     const step = e.shiftKey ? 10 : 1;
     nudgeSelected(e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0,
                   e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0);
   }
-  else if (e.key === 'Delete' || e.key === 'Backspace') {
+  else if (!onControl && (e.key === 'Delete' || e.key === 'Backspace')) {
     if (selText) { e.preventDefault(); deleteSelected(); }
     else if (movingIds().length) { e.preventDefault(); layerDelete(); }
   }
@@ -1953,6 +2133,9 @@ function onKeyDown(e) {
     selText = null; selLayers = []; selLayer = null; drag = null;
     updateLayerUI(); render();
   }
+}
+function onKeyUp(e) {
+  if (e.key === ' ' || e.code === 'Space') { spaceDown = false; if (!panDrag) applyCursor(); }
 }
 function scheduleClipPaste() {
   const t0 = Date.now();
@@ -2006,6 +2189,7 @@ function wire() {
   });
   $('#filled').addEventListener('change', e => style.filled = e.target.checked);
   $('#wandGlobal').addEventListener('change', e => wand.global = e.target.checked);
+  $('#wandTransparent').addEventListener('change', e => wand.transparent = e.target.checked);
   $('#fmt').addEventListener('change', syncAdjustUI);
 
   $('#selEdit').onclick = editSelected;
@@ -2094,17 +2278,39 @@ function wire() {
   window.addEventListener('dragover', e => e.preventDefault());
   window.addEventListener('drop', e => e.preventDefault());
 
+  // zoom + pan
+  $('#zoomOut').onclick = () => setZoom(zoom / 1.25);
+  $('#zoomIn').onclick  = () => setZoom(zoom * 1.25);
+  $('#zoomFit').onclick = () => fitView();
+  $('#zoomPct').onclick = () => setZoom(1);
+  stage.addEventListener('wheel', e => {
+    if (!hasImage) return;
+    e.preventDefault();
+    const r = stage.getBoundingClientRect();
+    const step = e.deltaMode === 1 ? e.deltaY * 0.05 : e.deltaY * 0.0015;
+    setZoom(zoom * Math.exp(-step), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+  window.addEventListener('resize', () => {
+    if (!hasImage) return;
+    if (atFit) { fitView(); return; }   // refit and re-centre for the new viewport size
+    fitZoom = fitScale();
+    zoom = clampZoom(zoom);
+    clampPan(); applyView(); render();
+  });
+
   // keyboard
   window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
 }
 
 /* ---------------------------------------------------------------- 19  boot */
 function buildToolButtons() {
-  for (const [id, label] of TOOLS) {
+  for (const [id, label, key] of TOOLS) {
     const b = document.createElement('button');
-    b.textContent = label; b.dataset.tool = id; b.title = label;
+    b.textContent = label; b.dataset.tool = id; b.title = label + ' (' + key.toUpperCase() + ')';
     b.addEventListener('click', () => setTool(id));
     toolsEl.appendChild(b);
+    TOOL_KEYS[key] = id;
   }
 }
 function buildFontOptions() {
