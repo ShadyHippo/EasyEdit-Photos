@@ -126,7 +126,7 @@ async function main() {
   check("top row holds the 5 global tools", shell.topTools === 5, shell.topTools);
   check("annotate row holds the 7 annotation tools", shell.annTools === 7, shell.annTools);
   check("sidebar exposes the Tool / Layers / Image tabs", shell.tabs.join() === "tool,layers,image", shell.tabs);
-  check("the Tool tab is active on boot", shell.activeTab === "tool", shell.activeTab);
+  check("boot lands on the Layers tab (Move is the default tool)", shell.activeTab === "layers", shell.activeTab);
   check("tool buttons carry an icon and a [hotkey] badge", shell.hasIcon === true && shell.hasKey === true);
   check("the Export footer is pinned inside the panel", shell.footerInPanel === true && shell.footerVisible === true, shell);
 
@@ -142,6 +142,49 @@ async function main() {
      footer:getComputedStyle(document.querySelector('#exportFooter')).display !== 'none'})`);
   check("the Layers tab shows the annotations tier and keeps the Export footer",
     layTab.pane === true && layTab.tier === true && layTab.footer === true, layTab);
+  await evaluate(`setTool('move'); setTab('tool');`);
+
+  // ---- per-tool tab routing, contextual options, the badge, the wand + bg tweaks ----
+  const hotkey = await evaluate(`(function(){const b=document.querySelector('#tools [data-tool=wand]');
+     const k=b.querySelector('.k'); return {txt:k&&k.textContent, box:k?getComputedStyle(k).borderTopWidth:'none'};})()`);
+  check("tool buttons show the hotkey in a boxed badge", hotkey.txt === "w" && hotkey.box !== "none" && hotkey.box !== "0px", hotkey);
+
+  await evaluate(`document.querySelector('[data-tool=move]').click()`);
+  check("Move opens the Layers tab", (await evaluate(`document.querySelector('#tabs .tab.on').dataset.tab`)) === "layers");
+
+  await evaluate(`document.querySelector('[data-tool=marquee]').click()`);
+  check("Select opens the Image tab", (await evaluate(`document.querySelector('#tabs .tab.on').dataset.tab`)) === "image");
+  await evaluate(`selection = {x:10,y:10,w:50,h:50}`);
+  await evaluate(`document.querySelector('[data-tool=move]').click()`);
+  check("the marquee is dropped when the Select tool is left", (await evaluate(`selection`)) === null);
+
+  await evaluate(`document.querySelector('[data-tool=text]').click()`);
+  const tx = await evaluate(`({w:document.querySelector('#widthRow').hidden, o:document.querySelector('#opacityRow').hidden,
+     f:document.querySelector('#fillRow').hidden, c:document.querySelector('#colorRow').hidden,
+     font:getComputedStyle(document.querySelector('#fontRow')).display !== 'none'})`);
+  check("the Text tool hides Width/Opacity/Fill but keeps Colour + font", tx.w && tx.o && tx.f && !tx.c && tx.font, tx);
+
+  await evaluate(`document.querySelector('[data-tool=blob]').click()`);
+  const blobTab = await evaluate(`({fry:!!document.querySelector('#blobSec #fryBtn'), level:!!document.querySelector('#blobSec #fryLevel'),
+     gone:!document.querySelector('#funSec'), tab:document.querySelector('#tabs .tab.on').dataset.tab})`);
+  check("Deep fry now lives inside the Blob tool section",
+    blobTab.fry === true && blobTab.level === true && blobTab.gone === true && blobTab.tab === "tool", blobTab);
+
+  const wandUi = await evaluate(`(function(){document.querySelector('[data-tool=wand]').click();
+     return {color:!!document.querySelector('#wandSec #wandColor'),
+             disabled:document.querySelector('#wandColor').disabled,
+             order:[...document.querySelectorAll('#wandSec label')].map(l=>l.textContent.trim().split(' ')[0])};})()`);
+  check("the wand has its own colour, boxed above Tolerance, muted while Transparent is on",
+    wandUi.color === true && wandUi.disabled === true && wandUi.order.join() === "All,Transparent,Color,Tolerance", wandUi);
+
+  const bgUi = await evaluate(`({url:!!document.querySelector('#bgUrl'), btn:!!document.querySelector('#bgBtn')})`);
+  check("the background-removal URL field is gone", bgUi.url === false && bgUi.btn === true, bgUi);
+  await evaluate(`bgProbeUrl='${STUB}/stats'`);
+  const bgUp = await evaluate(`syncBgSection()`, true);
+  check("the background section appears only when the sidecar answers",
+    bgUp === true && (await evaluate(`document.querySelector('#bgSec').hidden`)) === false);
+  await evaluate(`bgProbeUrl='/bg/'; syncBgSection();`);
+
   await evaluate(`setTool('move'); setTab('tool');`);
 
   // ---- 1. load via paste ----
@@ -424,7 +467,7 @@ async function main() {
   check("marquee spans both layers", !!selSpan && selSpan.w > 800 && selSpan.h > 500, selSpan);
 
   const nBefore = await evaluate(`layers.length`);
-  await evaluate(`document.querySelector('[data-tool=move]').click(); document.querySelector('#fxBlurBtn').click()`);
+  await evaluate(`document.querySelector('#fxBlurBtn').click()`);   // stay on Select so the marquee still scopes the effect
   await sleep(500);
   const fx = await evaluate(`(function(){const l=layers[layers.length-1];
      return {n:layers.length, x:Math.round(l.x), y:Math.round(l.y), w:Math.round(l.w), h:Math.round(l.h)};})()`);
@@ -484,7 +527,6 @@ async function main() {
   const q2 = await evaluate(`(function(){const r=view.getBoundingClientRect();const s=r.width/view.width;return {x:r.left+400*s,y:r.top+300*s};})()`);
   await dragPx(q1.x, q1.y, q2.x, q2.y);
   const sect = await evaluate(`({...selection})`);
-  await evaluate(`document.querySelector('[data-tool=move]').click()`);
   const nSec = await evaluate(`layers.length`);
   await send("Input.dispatchKeyEvent", { type:"keyDown", key:"c", code:"KeyC", modifiers:2, windowsVirtualKeyCode:67, nativeVirtualKeyCode:67 });
   await send("Input.dispatchKeyEvent", { type:"keyUp", key:"c", code:"KeyC", modifiers:2, windowsVirtualKeyCode:67, nativeVirtualKeyCode:67 });
@@ -603,8 +645,8 @@ async function main() {
   const tapBefore = await evaluate(`(function(){const bx=Math.round(view.width*0.25), by=Math.round(view.height*0.25);
      return [...vctx.getImageData(bx,by,1,1).data];})()`);
   await evaluate(`(function(){selText=null;
-    const c=document.querySelector('#color'); c.value='#123456'; c.dispatchEvent(new Event('input'));
-    const t=document.querySelector('#wandTransparent'); t.checked=false; t.dispatchEvent(new Event('change')); return 1;})()`);
+    const t=document.querySelector('#wandTransparent'); t.checked=false; t.dispatchEvent(new Event('change'));
+    const c=document.querySelector('#wandColor'); c.value='#123456'; c.dispatchEvent(new Event('input')); return 1;})()`);
   const wandFill = await evaluate(`(async()=>{const bx=Math.round(view.width*0.25), by=Math.round(view.height*0.25);
      doWand({x:bx,y:by}); await new Promise(r=>setTimeout(r,50));
      return {at:[...vctx.getImageData(bx,by,1,1).data], toast:document.querySelector('#toast').textContent};})()`, true);
@@ -674,7 +716,7 @@ async function main() {
 
   // ---- 9. background removal via stub server ----
   await evaluate(`selLayer = null; updateLayerUI();`);
-  await evaluate(`document.querySelector('#bgUrl').value='${STUB}/api/remove'`);
+  await evaluate(`bgEndpoint='${STUB}/api/remove'`);
   await evaluate(`document.querySelector('#bgBtn').click()`);
   const bgToast = await waitToast(/Background removed|Failed/, 20000);
   const bgState = await evaluate(`({w:view.width,h:view.height})`);
@@ -1317,7 +1359,6 @@ async function main() {
      window.__mq={x1:r.left+(l.x-20)*s, y1:r.top+(l.y-20)*s, x2:r.left+(l.x+l.w+20)*s, y2:r.top+(l.y+l.h+20)*s};return 1;})()`);
   const mq = await evaluate(`window.__mq`);
   await dragPx(mq.x1, mq.y1, mq.x2, mq.y2);
-  await evaluate(`document.querySelector('[data-tool=move]').click()`);
   const beforeSel = await evaluate(checkerOver);
   await evaluate(`(function(){const s=document.querySelector('#sepia'); s.value='70'; s.dispatchEvent(new Event('input')); return 1;})()`);
   await sleep(250);
@@ -1336,13 +1377,13 @@ async function main() {
 
   // ============ 11g. bundled fonts + font size ============
   const fontsOk = await evaluate(`(async()=>{
-     const fams = ['Anton','Inter','Playfair Display','Comic Neue','Caveat'];
+     const fams = ['Anton','Inter','Roboto','Playfair Display','Comic Neue','Caveat'];
      await Promise.all(fams.map(f => document.fonts.load('48px "' + f + '"')));
      return fams.map(f => [f, document.fonts.check('48px "' + f + '"')]); })()`, true);
-  check("all five bundled fonts load (no system/CDN fallback)", fontsOk.every(([, ok]: any) => ok), fontsOk);
+  check("all six bundled fonts load (no system/CDN fallback)", fontsOk.every(([, ok]: any) => ok), fontsOk);
   const famsInMenu = await evaluate(`[...document.querySelectorAll('#fontFamily option')].length`);
-  check("font menu offers exactly the bundled five", famsInMenu === 5, famsInMenu);
-  check("no more than 5 fonts are shipped", (await evaluate(`1`)) === 1);
+  check("font menu offers exactly the bundled six", famsInMenu === 6, famsInMenu);
+  check("Roboto is offered as a plain sans", (await evaluate(`[...document.querySelectorAll('#fontFamily option')].some(o=>o.value==='Roboto')`)) === true);
 
   await evaluate(`document.querySelector('[data-tool=text]').click()`);
   await evaluate(`(function(){const n=document.querySelector('#fontSizeNum'); n.value='900'; n.dispatchEvent(new Event('input')); return 1;})()`);
@@ -1444,6 +1485,46 @@ async function main() {
     distorted.lx === 400 && distorted.ly === 50 && distorted.lw === 600 && distorted.lh === 100,
     distorted);
   check("blobs scale with the canvas too", distorted.bx === 800 && distorted.by === 150, { bx: distorted.bx, by: distorted.by });
+
+  // ============ 11i. text background plates ============
+  await evaluate(`document.querySelector('[data-tool=text]').click()`);
+  const textBgUi = await evaluate(`({on:!!document.querySelector('#textBgOn'), col:!!document.querySelector('#textBgColor'),
+     op:!!document.querySelector('#textBgOpacity'), pad:!!document.querySelector('#textPad'), rad:!!document.querySelector('#textRadius'),
+     disabled:document.querySelector('#textBgColor').disabled})`);
+  check("the Text tool exposes standard background options, inert until enabled",
+    textBgUi.on === true && textBgUi.col === true && textBgUi.op === true && textBgUi.pad === true && textBgUi.rad === true && textBgUi.disabled === true, textBgUi);
+
+  await evaluate(`adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
+    texts = []; selText = null; style.bg = null; syncTextBgUI();
+    texts.push({id:'bg1',x:200,y:60,text:'X',color:'#ffffff',size:120,family:'Inter',bold:false,italic:false,
+                opacity:1,bg:'#ff0000',bgOpacity:1,pad:30,radius:0});
+    updateLayerUI(); render();`);
+  const plate = await evaluate(`(function(){
+     const t=texts[0], r=textRect(t), box=textBBox(t);
+     const at=(x,y)=>[...vctx.getImageData(Math.round(x),Math.round(y),1,1).data];
+     return { pad:at(r.x+4,r.y+4), rect:{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.w),h:Math.round(r.h)}, bw:Math.round(box.w), bh:Math.round(box.h) };})()`);
+  check("a text background draws a plate around the padded box",
+    plate.pad.join() === '255,0,0,255' && plate.rect.w === plate.bw + 60 && plate.rect.h === plate.bh + 60, plate);
+
+  const half = await evaluate(`(function(){texts[0].bgOpacity=0.5; render();
+     const r=textRect(texts[0]); return [...vctx.getImageData(Math.round(r.x+4),Math.round(r.y+4),1,1).data];})()`);
+  check("background opacity blends the plate", half.join() !== plate.pad.join(), { opaque: plate.pad, half });
+
+  const grown = await evaluate(`(function(){texts[0].pad=60; render(); return Math.round(textRect(texts[0]).w);})()`);
+  check("padding grows the plate", grown === plate.rect.w + 60, { before: plate.rect.w, after: grown });
+
+  await evaluate(`texts[0].bgOpacity=1; render();`);
+  const inExport = await evaluate(`(function(){const c=composite(); const r=textRect(texts[0]);
+     return [...c.getContext('2d').getImageData(Math.round(r.x+4),Math.round(r.y+4),1,1).data];})()`);
+  check("the plate is baked into the export", inExport.join() === '255,0,0,255', inExport);
+
+  await evaluate(`document.querySelector('[data-tool=text]').click(); selectText(texts[0]);`);
+  const bgSel = await evaluate(`({on:document.querySelector('#textBgOn').checked, col:document.querySelector('#textBgColor').value,
+     pad:document.querySelector('#textPad').value, disabled:document.querySelector('#textBgColor').disabled})`);
+  check("selecting a text loads its background settings into the panel",
+    bgSel.on === true && bgSel.col === '#ff0000' && bgSel.pad === '60' && bgSel.disabled === false, bgSel);
+
+  await evaluate(`texts = []; selText = null; style.bg = null; style.bgOpacity = 0.8; style.pad = 14; style.radius = 10; syncTextBgUI(); render();`);
 
   // ---- 12. errors ----
   check("no uncaught page exceptions", exceptions.length === 0, exceptions.slice(0, 4));

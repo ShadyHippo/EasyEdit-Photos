@@ -17,6 +17,7 @@
   @font-face { font-family:'Comic Neue'; font-style:normal; font-weight:700; font-display:swap; src:url('fonts/comic-neue-700.woff2') format('woff2'); }
   @font-face { font-family:'Inter'; font-style:normal; font-weight:400 700; font-display:swap; src:url('fonts/inter-var.woff2') format('woff2'); }
   @font-face { font-family:'Playfair Display'; font-style:normal; font-weight:400 700; font-display:swap; src:url('fonts/playfair-display-var.woff2') format('woff2'); }
+  @font-face { font-family:'Roboto'; font-style:normal; font-weight:100 900; font-display:swap; src:url('fonts/roboto-var.woff2') format('woff2'); }
 
   :root {
     --bg:#1b1c1f; --panel:#232428; --line:#34353a; --fg:#e7e7ea; --muted:#9a9ba1;
@@ -57,8 +58,11 @@
   button.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
   button svg { width:16px; height:16px; flex:none; }
   #tools button svg, #annTools button svg { margin-right:6px; }
-  .k { font:11px ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--muted); }
-  button.active .k { color:var(--ink); opacity:.65; }
+  /* hotkey badge: a real box, baseline-aligned with the label, so it lines up on every button */
+  .k { display:inline-block; margin:0 1px 0 0; padding:0 2px; min-width:13px; text-align:center;
+       border:1px solid #3f4046; border-radius:3px; background:#31323a;
+       font-size:10px; line-height:14px; font-weight:600; color:var(--muted); }
+  button.active .k { color:var(--ink); border-color:#00000030; background:#ffffff3d; }
 
   main { flex:1; display:flex; min-height:0; }
   #stage {
@@ -121,9 +125,11 @@
   aside#panel select { width:auto; flex:1; }
   input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; flex:none; margin:0; }
   .row { display:flex; gap:6px; }
+  #textBgRow { display:flex; flex-direction:column; gap:7px; }
   .row > * { flex:1; }
   output { color:var(--muted); width:28px; text-align:right; }
   .note { color:var(--muted); font-size:11px; line-height:1.35; }
+  aside#panel input:disabled { opacity:.4; }
 
   /* the annotations tier sits at the top of the Layers pane, above the image layers */
   #annSec { border:1px solid var(--line); border-radius:9px; padding:9px; background:var(--tier); }
@@ -254,10 +260,10 @@
 
       <section id="styleSec">
         <h3>Style</h3>
-        <label>Color <input type="color" id="color" value="#ff3b30"></label>
-        <label>Width <input type="range" id="width" min="1" max="80" value="6"><output id="widthOut">6</output></label>
-        <label>Opacity <input type="range" id="opacity" min="0.05" max="1" step="0.05" value="1"><output id="opacityOut">1</output></label>
-        <label>Fill <input type="checkbox" id="filled"></label>
+        <label id="colorRow">Color <input type="color" id="color" value="#ff3b30"></label>
+        <label id="widthRow">Width <input type="range" id="width" min="1" max="80" value="6"><output id="widthOut">6</output></label>
+        <label id="opacityRow">Opacity <input type="range" id="opacity" min="0.05" max="1" step="0.05" value="1"><output id="opacityOut">1</output></label>
+        <label id="fillRow">Fill <input type="checkbox" id="filled"></label>
         <div id="fontRow">
           <label>Font <select id="fontFamily"></select></label>
           <label>Size
@@ -269,15 +275,23 @@
             <button id="boldBtn" title="Bold">Bold</button>
             <button id="italicBtn" title="Italic">Italic</button>
           </div>
+          <div id="textBgRow">
+            <label>Background <input type="checkbox" id="textBgOn"></label>
+            <label>BG color <input type="color" id="textBgColor" value="#000000"></label>
+            <label>BG opacity <input type="range" id="textBgOpacity" min="0" max="1" step="0.05" value="0.8"><output id="textBgOpacityOut">0.8</output></label>
+            <label>Padding <input type="range" id="textPad" min="0" max="80" value="14"><output id="textPadOut">14</output></label>
+            <label>Corners <input type="range" id="textRadius" min="0" max="60" value="10"><output id="textRadiusOut">10</output></label>
+          </div>
         </div>
       </section>
 
       <section id="wandSec" hidden>
         <h3>Magic wand</h3>
-        <label>Tolerance <input type="range" id="tolerance" min="0" max="100" value="22"><output id="toleranceOut">22</output></label>
         <label>All similar <input type="checkbox" id="wandGlobal"></label>
         <label>Transparent <input type="checkbox" id="wandTransparent" checked></label>
-        <div class="note">Tap an area to replace it. Transparent clears it to see-through; untick to fill it with the Color above. Raise tolerance to match more shades at once.</div>
+        <label id="wandColorRow">Color <input type="color" id="wandColor" value="#ff3b30"></label>
+        <label>Tolerance <input type="range" id="tolerance" min="0" max="100" value="22"><output id="toleranceOut">22</output></label>
+        <div class="note">Tap an area to replace it. Transparent clears it to see-through; untick to fill it with the Color here. Raise tolerance to match more shades at once.</div>
       </section>
 
       <section id="cropSec" hidden>
@@ -290,11 +304,18 @@
       </section>
 
       <section id="blobSec" hidden>
-        <h3>Blob distort</h3>
+        <h3>Blob &amp; fry</h3>
         <label>Size <input type="range" id="blobSize" min="20" max="800" value="160"><output id="blobSizeOut">160</output></label>
         <label>Force <input type="range" id="blobStrength" min="-90" max="90" value="60"></label>
         <button id="blobClear">Clear distort blobs</button>
         <div class="note">Tap to add a blob, drag it to move. Blobs bulge the picture <b>before</b> frying, and are applied to what frying targets (the selected layer, or the background). UI only, never drawn into the image.</div>
+        <label>Fry <select id="fryLevel">
+          <option value="light">Light</option>
+          <option value="medium">Medium</option>
+          <option value="deep" selected>Deep fried</option>
+          <option value="nuked">Nuked</option>
+        </select></label>
+        <button id="fryBtn">Deep fry</button>
       </section>
     </div>
 
@@ -366,7 +387,6 @@
 
       <section id="bgSec">
         <h3>Remove background</h3>
-        <input type="text" id="bgUrl" placeholder="http://nas:7000/api/remove" spellcheck="false">
         <button id="bgBtn">Remove BG (server)</button>
         <div class="note">Applies to the selected layer, or the background. Uses your rembg container; the Wand does it instantly on-device.</div>
       </section>
@@ -380,18 +400,6 @@
         </div>
         <button id="applyResize">Resize</button>
         <div class="note">Locked: the other side follows as you type. Unlocked: distort freely - every layer, annotation and text scales with it.</div>
-      </section>
-
-      <section id="funSec">
-        <h3>Fun</h3>
-        <label>Fry <select id="fryLevel">
-          <option value="light">Light</option>
-          <option value="medium">Medium</option>
-          <option value="deep" selected>Deep fried</option>
-          <option value="nuked">Nuked</option>
-        </select></label>
-        <button id="fryBtn">Deep fry</button>
-        <div class="note">Deep-fries whatever frying targets: the selected layer, or the background.</div>
       </section>
     </div>
 
@@ -485,6 +493,7 @@ const DEFAULT_FILTER = { brightness:100, contrast:100, saturate:100, grayscale:0
 const FONT_CHOICES = [
   ['Anton',            'Heavy (Anton)'],
   ['Inter',            'Clean (Inter)'],
+  ['Roboto',           'Plain (Roboto)'],
   ['Playfair Display', 'Serif (Playfair)'],
   ['Comic Neue',       'Comic (Comic Neue)'],
   ['Caveat',           'Handwritten (Caveat)'],
@@ -514,9 +523,12 @@ const TOOL_ICONS = {
 };
 const toolIcon = id => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '
   + 'stroke-linecap="round" stroke-linejoin="round">' + (TOOL_ICONS[id] || '') + '</svg>';
-// Which Tool-tab section a tool owns (undefined = no options, e.g. Select).
-const TOOL_OPTS = { move:'style', text:'style', brush:'style', highlight:'style', line:'style',
+// Which Tool-tab section a tool owns (undefined = no options of its own).
+const TOOL_OPTS = { text:'style', brush:'style', highlight:'style', line:'style',
   arrow:'style', rect:'style', ellipse:'style', wand:'wand', crop:'crop', blob:'blob' };
+// Tools whose job lives somewhere other than the Tool tab: Move edits the stack (Layers),
+// Select scopes Effects/Adjust (Image).
+const TOOL_TAB = { move:'layers', marquee:'image' };
 const TOOL_KEYS = {};            // single-letter shortcut -> tool id, filled in by buildToolButtons()
 
 const FRY = {
@@ -557,8 +569,9 @@ let selShape = null;             // primary (last-clicked) annotation id
 let selShapes = [];              // full annotation multi-selection
 
 let blobs = [];                  // distort markers: UI only, never exported
-const style = { color:'#ff3b30', width:6, opacity:1, filled:false, fontSize:48, family:'Anton', bold:false, italic:false };
-const wand = { tolerance:22, global:false, transparent:true };
+const style = { color:'#ff3b30', width:6, opacity:1, filled:false, fontSize:48, family:'Anton', bold:false, italic:false,
+                bg:null, bgOpacity:0.8, pad:14, radius:10 };
+const wand = { tolerance:22, global:false, transparent:true, color:'#ff3b30' };
 const fx = { block:14, soft:8 };     // pixelate block size, blur radius
 const blobCfg = { size:160, strength:60 };
 let adjust = { ...DEFAULT_FILTER };
@@ -597,8 +610,21 @@ const hexToRgb = hex => {
   const n = parseInt(m[1], 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 };
+const hexToRgba = (hex, a) => { const [r, g, b] = hexToRgb(hex); return `rgba(${r},${g},${b},${a})`; };
 const canvas = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
 const clone = src => { const c = canvas(src.width, src.height); c.getContext('2d').drawImage(src, 0, 0); return c; };
+// Rounded-rect path (arcTo based, so it works regardless of ctx.roundRect support).
+function roundRectPath(ctx, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+  ctx.beginPath();
+  if (r <= 0) { ctx.rect(x, y, w, h); return; }
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
 const textLines = t => String(t.text).split('\n');
 const isImg = f => !!(f && f.type && f.type.startsWith('image/'));
 // Stable per-canvas identity, used by the render cache's scene signature.
@@ -957,28 +983,45 @@ function textBBox(t) {
   vctx.restore();
   return { w, h: Math.max(1, textLines(t).length) * t.size * 1.15 };
 }
+// Text legibility plate: padding only counts while a background colour is set.
+function textPad(t) { return t.bg ? Math.max(0, t.pad || 0) : 0; }
+// The box you actually see: the text plus its background padding.
+function textRect(t) {
+  const b = textBBox(t), p = textPad(t);
+  return { x: t.x - p, y: t.y - p, w: b.w + p * 2, h: b.h + p * 2 };
+}
 function paintText(ctx, t) {
   ctx.save();
   ctx.globalAlpha = t.opacity;
-  ctx.fillStyle = t.color;
   ctx.font = fontCss(t);
   ctx.textBaseline = 'top';
+  if (t.bg) {                                     // legibility plate behind the whole block
+    const r = textRect(t);
+    ctx.globalAlpha = t.opacity * clamp(t.bgOpacity ?? 1, 0, 1);
+    ctx.fillStyle = t.bg;
+    roundRectPath(ctx, r.x, r.y, r.w, r.h, t.radius || 0);
+    ctx.fill();
+    ctx.globalAlpha = t.opacity;
+  }
+  ctx.fillStyle = t.color;
   textLines(t).forEach((l, i) => ctx.fillText(l, t.x, t.y + i * t.size * 1.15));
   ctx.restore();
 }
 function drawSelection(t, faint = false) {
-  const b = textBBox(t);
+  const b = textRect(t);
   const s = viewScale();
-  const x = t.x - 4 / s, y = t.y - 4 / s, w = b.w + 8 / s, h = b.h + 8 / s;
+  const x = b.x - 4 / s, y = b.y - 4 / s, w = b.w + 8 / s, h = b.h + 8 / s;
   cctx.save();
-  cctx.strokeStyle = faint ? 'rgba(59,130,246,.6)' : '#3b82f6';
-  cctx.lineWidth = (faint ? 1.2 : 2) / s;
-  cctx.setLineDash(faint ? [5 / s, 4 / s] : [6 / s, 4 / s]);
+  cctx.fillStyle = faint ? 'rgba(34,197,94,.05)' : 'rgba(34,197,94,.12)';
+  cctx.fillRect(x, y, w, h);
+  cctx.strokeStyle = faint ? 'rgba(34,197,94,.6)' : '#22c55e';
+  cctx.lineWidth = (faint ? 1.5 : 2.5) / s;
+  cctx.setLineDash(faint ? [9 / s, 6 / s] : []);
   cctx.strokeRect(x, y, w, h);
   cctx.setLineDash([]);
   if (faint) {                                   // faint = unselected: show the box ends too
     const hs = (16 / s) * 0.6;
-    cctx.fillStyle = 'rgba(255,255,255,.92)'; cctx.strokeStyle = 'rgba(59,130,246,.9)'; cctx.lineWidth = 1.5 / s;
+    cctx.fillStyle = 'rgba(255,255,255,.92)'; cctx.strokeStyle = 'rgba(34,197,94,.9)'; cctx.lineWidth = 1.5 / s;
     for (const [hx, hy] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) {
       cctx.beginPath(); cctx.rect(hx - hs / 2, hy - hs / 2, hs, hs); cctx.fill(); cctx.stroke();
     }
@@ -1019,22 +1062,27 @@ function drawShapeOutline(s, isPrimary, faint = false) {
   const lineish = s.type === 'line' || s.type === 'arrow';
   const b = shapeBox(s);
   cctx.save();
-  cctx.strokeStyle = faint ? 'rgba(59,130,246,.6)' : (isPrimary ? '#3b82f6' : 'rgba(59,130,246,.7)');
-  cctx.lineWidth = (isPrimary ? 1.6 : 1.2) / sc;
-  cctx.setLineDash([7 / sc, 5 / sc]);
+  if (!lineish) {                                   // same green/tint language as layers
+    cctx.fillStyle = faint ? 'rgba(34,197,94,.05)' : (isPrimary ? 'rgba(34,197,94,.12)' : 'rgba(34,197,94,.06)');
+    cctx.fillRect(b.x - 3 / sc, b.y - 3 / sc, b.w + 6 / sc, b.h + 6 / sc);
+  }
+  cctx.strokeStyle = faint ? 'rgba(34,197,94,.6)' : (isPrimary ? '#22c55e' : 'rgba(34,197,94,.75)');
+  cctx.lineWidth = (isPrimary ? 2.5 : 1.5) / sc;
+  cctx.setLineDash(isPrimary ? [] : [9 / sc, 6 / sc]);
   if (lineish) { cctx.beginPath(); cctx.moveTo(s.x1, s.y1); cctx.lineTo(s.x2, s.y2); cctx.stroke(); }
   else cctx.strokeRect(b.x - 3 / sc, b.y - 3 / sc, b.w + 6 / sc, b.h + 6 / sc);
   cctx.setLineDash([]);
   const pts = shapeHandlePoints(s);
   // handles on the primary; small "end" markers on every unselected one under the Move tool
   if (isPrimary || faint) {
-    cctx.fillStyle = faint ? 'rgba(255,255,255,.92)' : '#fff';
-    cctx.strokeStyle = 'rgba(59,130,246,.9)';
-    cctx.lineWidth = (faint ? 1.5 : 2) / sc;
+    cctx.fillStyle = faint ? 'rgba(255,255,255,.92)' : '#22c55e';
+    cctx.strokeStyle = 'rgba(34,197,94,.9)';
+    cctx.lineWidth = (faint ? 1.5 : 1.2) / sc;
     for (const k in pts) {
       if (k === 'c') continue;
       const [hx, hy] = pts[k];
-      cctx.beginPath(); cctx.rect(hx - hs / 2, hy - hs / 2, hs, hs); cctx.fill(); cctx.stroke();
+      cctx.beginPath(); cctx.rect(hx - hs / 2, hy - hs / 2, hs, hs);
+      if (faint) { cctx.fill(); cctx.stroke(); } else cctx.fill();
     }
   }
   cctx.restore();
@@ -1057,7 +1105,7 @@ function sceneSig() {
     s += isStroke(sh) ? ',' + sh.points.length : ',' + Math.round(sh.x1) + ',' + Math.round(sh.y1) + ',' + Math.round(sh.x2) + ',' + Math.round(sh.y2);
   }
   s += '\u0005';
-  for (const t of texts) s += '\u0002' + t.x.toFixed(1) + ',' + t.y.toFixed(1) + ',' + t.size + ',' + t.color + ',' + t.opacity + ',' + (t.bold ? 1 : 0) + (t.italic ? 1 : 0) + ',' + t.family + ',' + t.text;
+  for (const t of texts) s += '\u0002' + t.x.toFixed(1) + ',' + t.y.toFixed(1) + ',' + t.size + ',' + t.color + ',' + t.opacity + ',' + (t.bold ? 1 : 0) + (t.italic ? 1 : 0) + ',' + t.family + ',' + t.text + ',' + (t.bg || '-') + ',' + (t.bgOpacity ?? 1) + ',' + (t.pad || 0) + ',' + (t.radius || 0);
   return s;
 }
 function stackCanvas() {
@@ -1137,7 +1185,7 @@ function drawCenterGrip(cx, cy, big = true) {
   cctx.save();
   cctx.beginPath(); cctx.arc(cx, cy, r, 0, Math.PI * 2);
   cctx.fillStyle = '#ffffff'; cctx.fill();
-  cctx.strokeStyle = '#3b82f6'; cctx.lineWidth = (big ? 2 : 1.5) / sc;
+  cctx.strokeStyle = '#22c55e'; cctx.lineWidth = (big ? 2 : 1.5) / sc;
   cctx.stroke();
   cctx.restore();
 }
@@ -1168,7 +1216,7 @@ function drawLayerOutline(l, isPrimary, faint = false) {
 function drawHoverOutline(l) {
   const s = viewScale();
   cctx.save();
-  cctx.strokeStyle = '#60a5fa'; cctx.lineWidth = 1.5 / s;
+  cctx.strokeStyle = 'rgba(34,197,94,.55)'; cctx.lineWidth = 1.5 / s;
   cctx.setLineDash([4 / s, 4 / s]);
   cctx.strokeRect(l.x, l.y, l.w, l.h);
   cctx.restore();
@@ -1191,11 +1239,11 @@ function drawSelectionOverlay(r) {
   cctx.fillStyle = 'rgba(0,0,0,.14)';
   cctx.beginPath(); cctx.rect(0, 0, view.width, view.height); cctx.rect(r.x, r.y, r.w, r.h);
   cctx.fill('evenodd');
-  cctx.strokeStyle = '#3b82f6'; cctx.lineWidth = 1.5 / s; cctx.setLineDash([7 / s, 5 / s]);
+  cctx.strokeStyle = '#22c55e'; cctx.lineWidth = 1.5 / s; cctx.setLineDash([7 / s, 5 / s]);
   cctx.strokeRect(r.x, r.y, r.w, r.h);
   cctx.setLineDash([]);
   const t = 9 / s;
-  cctx.fillStyle = '#3b82f6';
+  cctx.fillStyle = '#22c55e';
   for (const [cx, cy] of [[r.x,r.y],[r.x+r.w,r.y],[r.x,r.y+r.h],[r.x+r.w,r.y+r.h]]) cctx.fillRect(cx - t/2, cy - t/2, t, t);
   cctx.restore();
 }
@@ -1263,7 +1311,7 @@ function renderChrome() {
   // Centre grips are drawn LAST and picked FIRST, so they always sit on/above every other handle.
   for (const l of layers) if (tool === 'move' || selL.has(l.id)) drawLayerGrip(l, l.id === selLayer);
   for (const s of shapes) if (tool === 'move' || selS.has(s.id)) { const c = shapeHandlePoints(s).c; drawCenterGrip(c[0], c[1], s.id === selShape); }
-  for (const t of texts) if (tool === 'move' || t.id === selText) { const b = textBBox(t); drawCenterGrip(t.x + b.w / 2, t.y + b.h / 2, t.id === selText); }
+  for (const t of texts) if (tool === 'move' || t.id === selText) { const b = textRect(t); drawCenterGrip(b.x + b.w / 2, b.y + b.h / 2, t.id === selText); }
 }
 
 /* -------------------------------------------------------------- 8  pointer */
@@ -1272,6 +1320,7 @@ function setTab(name) {
   if (!PANES[name]) name = 'tool';
   $('#tabs').querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
   for (const k in PANES) $(PANES[k]).hidden = k !== name;
+  if (name === 'image') syncBgSection();   // the rembg sidecar may have come up since boot
 }
 function syncToolButtons(id) {
   document.querySelectorAll('#tools [data-tool], #annTools [data-tool]')
@@ -1280,6 +1329,8 @@ function syncToolButtons(id) {
 function setTool(id) {
   if (tool === 'crop' && id !== 'crop') cancelCrop();
   tool = id;
+  // The marquee box only exists while Select is active, so drop the selection when leaving it.
+  if (id !== 'marquee' && selection) { selection = null; updateSelInfo(); }
   syncToolButtons(id);
   applyCursor();
   // The Tool tab shows exactly one tool's options — pick the section that belongs to this tool.
@@ -1288,9 +1339,13 @@ function setTool(id) {
   $('#wandSec').hidden  = opts !== 'wand';
   $('#blobSec').hidden  = opts !== 'blob';
   $('#cropSec').hidden  = !crop;
-  $('#fontRow').style.display = (id === 'text' || id === 'move') ? '' : 'none';
+  // Width / Opacity / Fill only affect drawn annotations — never text.
+  const text = id === 'text';
+  $('#fontRow').style.display = text ? '' : 'none';
+  $('#widthRow').hidden = text; $('#opacityRow').hidden = text; $('#fillRow').hidden = text;
   $('#toolHint').hidden = !!(opts || crop);
-  if (id !== 'move' && id !== 'marquee') setTab('tool');   // land on the tool's own options
+  if (TOOL_TAB[id]) setTab(TOOL_TAB[id]);           // Move -> Layers, Select -> Image
+  else if (opts) setTab('tool');                    // drawing / wand / crop / blob -> its options
   if (id === 'highlight' && $('#opacity').value === '1') setRange('opacity', 0.4);
   if (id !== 'move' && id !== 'text') { selText = null; clearShapeSel(); }
   else if (id === 'text') clearShapeSel();          // text tool: keep the text box, drop annotations
@@ -1303,8 +1358,8 @@ function toCanvas(e) {
 }
 function hitText(p) {
   for (let i = texts.length - 1; i >= 0; i--) {
-    const t = texts[i], b = textBBox(t);
-    if (p.x >= t.x - 6 && p.x <= t.x + b.w + 6 && p.y >= t.y - 6 && p.y <= t.y + b.h + 6) return t;
+    const t = texts[i], b = textRect(t);
+    if (p.x >= b.x - 6 && p.x <= b.x + b.w + 6 && p.y >= b.y - 6 && p.y <= b.y + b.h + 6) return t;
   }
   return null;
 }
@@ -1343,8 +1398,8 @@ function topHandleHit(e) {
   const near = pts => Math.abs(e.clientX - (r.left + pts[0] * sc)) <= R && Math.abs(e.clientY - (r.top + pts[1] * sc)) <= R;
   // 1. centre grips (same z-order as content: texts over annotations over layers)
   for (let i = texts.length - 1; i >= 0; i--) {
-    const t = texts[i], b = textBBox(t);
-    if (near([t.x + b.w / 2, t.y + b.h / 2])) return { kind:'textGrip', id:t.id };
+    const t = texts[i], b = textRect(t);
+    if (near([b.x + b.w / 2, b.y + b.h / 2])) return { kind:'textGrip', id:t.id };
   }
   for (let i = shapes.length - 1; i >= 0; i--) if (near(shapeHandlePoints(shapes[i]).c)) return { kind:'shapeGrip', id:shapes[i].id };
   for (let i = layers.length - 1; i >= 0; i--) if (near(layerHandlePoints(layers[i]).c)) return { kind:'layerGrip', id:layers[i].id };
@@ -1605,11 +1660,18 @@ function beginPan(e) {
 function selectText(t) {
   selText = t.id; clearShapeSel(); selLayers = []; selLayer = null;
   style.family = t.family; style.bold = t.bold; style.italic = t.italic;
+  style.bg = t.bg ?? null; style.bgOpacity = t.bgOpacity ?? 0.8;
+  style.pad = t.pad ?? 14; style.radius = t.radius ?? 10;
   $('#fontFamily').value = t.family;
   $('#fontSize').value = Math.min(t.size, 1200);
   $('#fontSizeOut').textContent = Math.round(t.size);
   $('#fontSizeNum').value = Math.round(t.size);
+  $('#textBgColor').value = style.bg || '#000000';
+  $('#textBgOpacity').value = style.bgOpacity; $('#textBgOpacityOut').textContent = style.bgOpacity;
+  $('#textPad').value = style.pad; $('#textPadOut').textContent = style.pad;
+  $('#textRadius').value = style.radius; $('#textRadiusOut').textContent = style.radius;
   syncStyleButtons();
+  syncTextBgUI();
   updateLayerUI();
   updateSelBar();
 }
@@ -1617,7 +1679,8 @@ function createTextBox(p) {
   const pre = snapshot();
   const t = { id: uid(), x: p.x, y: p.y, text: '', color: style.color, size: style.fontSize,
               family: style.family, bold: style.bold, italic: style.italic,
-              opacity: Math.max(0.35, style.opacity) };
+              opacity: Math.max(0.35, style.opacity),
+              bg: style.bg, bgOpacity: style.bgOpacity, pad: style.pad, radius: style.radius };
   texts.push(t); selText = t.id; clearShapeSel(); selLayers = []; selLayer = null;
   openTextEditor(t, pre, true);
 }
@@ -1632,10 +1695,15 @@ function openTextEditor(t, pre, isNew) {
   ta.className = 'textinput';
   ta.value = t.text;
   ta.rows = 1;
-  ta.style.left = ((r.left - sr.left) + t.x * scale) + 'px';
-  ta.style.top = ((r.top - sr.top) + t.y * scale) + 'px';
+  ta.style.left = ((r.left - sr.left) + (t.x - textPad(t)) * scale) + 'px';
+  ta.style.top = ((r.top - sr.top) + (t.y - textPad(t)) * scale) + 'px';
   ta.style.color = t.color;
   ta.style.font = fontCss(t, scale);
+  if (t.bg) {                                    // preview the plate while typing
+    ta.style.background = hexToRgba(t.bg, clamp(t.bgOpacity ?? 1, 0, 1));
+    ta.style.borderRadius = (t.radius || 0) * scale + 'px';
+  }
+  if (textPad(t)) ta.style.padding = (textPad(t) * scale) + 'px';
   stage.appendChild(ta);
   const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px';
                        ta.style.width = Math.max(60, ta.scrollWidth + 10) + 'px'; };
@@ -1696,7 +1764,7 @@ function updateSelBar() {
   $('#selEdit').style.display = t ? '' : 'none';      // an annotation has no text to edit
   const r = view.getBoundingClientRect(), sr = stage.getBoundingClientRect();
   const scale = viewScale();
-  const b = t ? { x:t.x, y:t.y, w:textBBox(t).w, h:textBBox(t).h } : shapeBox(s);
+  const b = t ? textRect(t) : shapeBox(s);
   const left = (r.left - sr.left) + b.x * scale;
   const top = (r.top - sr.top) + b.y * scale - 42;
   bar.hidden = false;
@@ -1717,6 +1785,7 @@ function updateSelInfo() {
 }
 function selectAll() {
   if (!hasImage) return;
+  if (tool !== 'marquee') setTool('marquee');     // the box is only real under the Select tool
   selection = { x:0, y:0, w:base.width, h:base.height };
   updateSelInfo(); render(); toast('Selected whole image');
 }
@@ -1870,7 +1939,7 @@ function doWand(p) {
          : selection)
     : null;
   const img = tctx.getImageData(0, 0, tgt.width, tgt.height);
-  const fill = wand.transparent ? null : hexToRgb(style.color);
+  const fill = wand.transparent ? null : hexToRgb(wand.color);
   const filled = floodFill(img, tgt.width, tgt.height, x, y, wand.tolerance, wand.global, b, fill);
   if (!filled) { toast('Nothing matched — raise tolerance'); return; }
   pushUndo();
@@ -2382,10 +2451,21 @@ async function deepfry(level) {
 }
 
 /* ------------------------------------------------------------------ 15  bg */
+// Same-origin path nginx proxies to the rembg container. Opened as a bare file there is no
+// proxy, so fall back to the sidecar's published port. The endpoint is never shown to the user.
+let bgEndpoint = location.protocol.startsWith('http') ? '/bg/api/remove' : 'http://localhost:3101/api/remove';
+let bgProbeUrl = location.protocol.startsWith('http') ? '/bg/' : 'http://localhost:3101/';
+// The sidecar is optional: nginx replies 502/503/504 when the rembg upstream is down, so only
+// reveal the section when it actually answers. Re-checked whenever the Image tab is opened.
+async function syncBgSection() {
+  let up = false;
+  try { const r = await fetch(bgProbeUrl, { method:'GET', cache:'no-store' }); up = r.status < 500 || r.status > 504; }
+  catch { up = false; }
+  $('#bgSec').hidden = !up;
+  return up;
+}
 async function removeBgServer() {
   if (!hasImage) return;
-  const url = ($('#bgUrl').value || '').trim();
-  if (!url) { toast('Set a server URL first'); return; }
   const l = primaryLayer();
   const src = l ? l.c : base;
   toast('Removing background…');
@@ -2393,7 +2473,7 @@ async function removeBgServer() {
     const blob = await new Promise(r => src.toBlob(r, 'image/png'));
     const fd = new FormData();
     fd.append('file', blob, 'image.png');
-    const res = await fetch(url, { method:'POST', body:fd });
+    const res = await fetch(bgEndpoint, { method:'POST', body:fd });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const out = await res.blob();
     const bmp = await createImageBitmap(out);
@@ -2582,6 +2662,12 @@ function syncStyleButtons() {
   $('#boldBtn').classList.toggle('active', style.bold);
   $('#italicBtn').classList.toggle('active', style.italic);
 }
+// Text-background controls are inert until a background colour is chosen — grey them out.
+function syncTextBgUI() {
+  const on = !!style.bg;
+  $('#textBgOn').checked = on;
+  for (const id of ['textBgColor', 'textBgOpacity', 'textPad', 'textRadius']) $('#' + id).disabled = !on;
+}
 function applyToSelectedText(fn) {
   const t = texts.find(x => x.id === selText);
   if (!t) return;
@@ -2742,8 +2828,26 @@ function wire() {
     style.filled = e.target.checked;
     applyStyleToSelection('filled', style.filled);
   });
+  $('#textBgOn').addEventListener('change', e => {
+    style.bg = e.target.checked ? $('#textBgColor').value : null;
+    applyStyleToSelection('bg', style.bg);
+    syncTextBgUI();
+  });
+  $('#textBgColor').addEventListener('input', e => {
+    style.bg = e.target.value;                   // picking a colour implies the plate is on
+    $('#textBgOn').checked = true;
+    applyStyleToSelection('bg', style.bg);
+    syncTextBgUI();
+  });
+  bindRange('textBgOpacity', 'bgOpacity', 'textBgOpacityOut');
+  bindRange('textPad', 'pad', 'textPadOut');
+  bindRange('textRadius', 'radius', 'textRadiusOut');
+  syncTextBgUI();
+  const syncWandColor = () => { $('#wandColor').disabled = wand.transparent; };   // Colour only matters when not clearing
   $('#wandGlobal').addEventListener('change', e => wand.global = e.target.checked);
-  $('#wandTransparent').addEventListener('change', e => wand.transparent = e.target.checked);
+  $('#wandTransparent').addEventListener('change', e => { wand.transparent = e.target.checked; syncWandColor(); });
+  $('#wandColor').addEventListener('input', e => wand.color = e.target.value);
+  syncWandColor();
   $('#fmt').addEventListener('change', syncAdjustUI);
 
   $('#selEdit').onclick = editSelected;
@@ -2874,7 +2978,7 @@ function buildToolButtons() {
     b.type = 'button'; b.dataset.tool = id;
     b.title = label + ' (' + key.toUpperCase() + ')';
     const rest = label[0].toLowerCase() === key ? label.slice(1) : label;   // every hotkey is the first letter
-    b.innerHTML = toolIcon(id) + '<span class="k">[' + key + ']</span>' + rest;
+    b.innerHTML = toolIcon(id) + '<span class="k">' + key + '</span>' + rest;
     b.addEventListener('click', () => setTool(id));
     host.appendChild(b);
     TOOL_KEYS[key] = id;
@@ -2896,13 +3000,8 @@ syncAdjustUI();
 updateLayerUI();
 updateSelInfo();
 syncStyleButtons();
-// Default the background-removal endpoint to this origin's proxied path (nginx -> rembg on the
-// shared docker network). Falls back to the direct port when opened as a bare file.
-if (!$('#bgUrl').value) {
-  $('#bgUrl').value = location.protocol.startsWith('http')
-    ? '/bg/api/remove'
-    : 'http://localhost:3101/api/remove';
-}
+// Only show the (optional) background-removal sidecar UI if it actually answers.
+syncBgSection();
 </script>
 </body>
 </html>

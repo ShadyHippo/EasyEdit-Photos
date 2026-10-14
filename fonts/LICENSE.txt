@@ -1,7 +1,7 @@
 Bundled fonts
 =============
 
-These five families are redistributed with Easy Edit under the SIL Open Font
+These six families are redistributed with Easy Edit under the SIL Open Font
 License, Version 1.1 (OFL-1.1), which permits bundling and redistribution.
 They are served locally so the editor never depends on fonts installed on the
 machine or on a CDN.
@@ -11,6 +11,7 @@ machine or on a CDN.
   Comic Neue        - Craig Rozynski                    - OFL-1.1
   Inter             - Rasmus Andersson                  - OFL-1.1
   Playfair Display  - Claus Eggers Sorensen             - OFL-1.1
+  Roboto            - Christian Robertson (Google)      - OFL-1.1
 
 Full license text: https://openfontlicense.org/
 Reserved Font Names apply; the .woff2 files are unmodified subsets of the
