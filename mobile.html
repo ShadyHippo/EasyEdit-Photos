@@ -23,7 +23,6 @@
   <button id="newBtn">New</button>
   <button id="openBtn" class="primary">Open</button>
   <button id="sheetToggle" class="primary">Controls</button>
-  <a id="deskLink" href="/?desktop=1" title="Desktop version" aria-label="Desktop version"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></a>
   <input type="file" id="file" accept="image/*" hidden>
 </header>
 
@@ -31,12 +30,6 @@
 <div id="stage">
     <canvas id="view" draggable="false"></canvas>
     <canvas id="chrome" aria-hidden="true"></canvas>
-    <div id="zoomHud" hidden>
-      <button id="zoomOut" title="Zoom out (-)">−</button>
-      <button id="zoomPct" title="Actual size (100%)">100%</button>
-      <button id="zoomIn" title="Zoom in (+)">+</button>
-      <button id="zoomFit" title="Fit to window (0)">Fit</button>
-    </div>
     <div id="hint">Tap <b>Open</b> to choose a photo</div>
     <div id="selbar" hidden>
       <button id="selEdit">Edit</button>
@@ -157,6 +150,7 @@
 
       <section id="selSec">
         <h3>Selection</h3>
+        <button id="cloneBtn">Clone</button>
         <div class="row" id="selOpsRow">
           <button id="selAllBtn">Select all</button>
           <button id="selClearBtn">Clear</button>
@@ -188,16 +182,16 @@
 
       <section id="fxSec">
         <h3>Effects</h3>
-        <label>Pixelate <input type="range" id="fxPixel" min="3" max="60" value="14"><output id="fxPixelOut">14</output></label>
+        <label id="fxPixelRow">Pixelate <input type="range" id="fxPixel" min="3" max="60" value="14"><output id="fxPixelOut">14</output></label>
         <button id="fxPixelBtn">Pixelate</button>
-        <label>Blur <input type="range" id="fxBlur" min="1" max="30" value="8"><output id="fxBlurOut">8</output></label>
+        <label id="fxBlurRow">Blur <input type="range" id="fxBlur" min="1" max="30" value="8"><output id="fxBlurOut">8</output></label>
         <button id="fxBlurBtn">Blur</button>
         <div class="note">Works on what you see: the selection is flattened and the effect applied to it, then kept as its own layer. No selection = the whole picture. Ctrl+A selects all.</div>
       </section>
 
       <section id="bgSec">
         <h3>Remove background</h3>
-        <button id="bgBtn">Remove BG (server)</button>
+        <button id="bgBtn">Remove BG</button>
         <div class="note">Applies to the selected layer, or the background. Uses your rembg container; the Wand does it instantly on-device.</div>
       </section>
 

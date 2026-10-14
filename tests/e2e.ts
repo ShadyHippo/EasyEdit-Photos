@@ -1182,9 +1182,9 @@ async function main() {
   const mvGrips = await evaluate(gripWhite);
   check("the Move tool shows a centre grip on every layer, annotation and text",
     mvGrips.layer > 0 && mvGrips.shape > 0 && mvGrips.text > 0, mvGrips);
-  await evaluate(`document.querySelector('[data-tool=rect]').click(); render();`);
+  await evaluate(`document.querySelector('[data-tool=rect]').click(); selectShape(shapes[0]); render();`);
   const noGrips = await evaluate(gripWhite);
-  check("grips are hidden again when another tool is active",
+  check("grips stay hidden with an annotation selected, once another tool is active",
     noGrips.layer === 0 && noGrips.shape === 0 && noGrips.text === 0, noGrips);
   await evaluate(`document.querySelector('[data-tool=move]').click(); render();`);
 

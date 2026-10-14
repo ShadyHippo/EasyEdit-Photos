@@ -718,7 +718,7 @@ function applyView() {
   view.style.height = view.height + 'px';
   view.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
   atFit = Math.abs(zoom - fitZoom) < 1e-9;
-  zoomPct.textContent = Math.round(zoom * 100) + '%';
+  if (zoomPct) zoomPct.textContent = Math.round(zoom * 100) + '%';   // no HUD on the phone
   renderChrome();
 }
 function fitView(redraw = true) {
@@ -865,8 +865,11 @@ function renderChrome() {
   const selS = new Set(selectedShapeSet().map(s => s.id));
   // Move tool: outline EVERY object and show its ends + centre grip, so nothing is invisible or
   // unreachable - including anything dragged off the edge of the image.
-  for (const l of layers) if (tool === 'move' || selL.has(l.id)) drawLayerOutline(l, selL.has(l.id), !selL.has(l.id));
-  for (const s of shapes) if (tool === 'move' || selS.has(s.id)) drawShapeOutline(s, selS.has(s.id), !selS.has(s.id));
+  // Only the Move tool draws object chrome (outline + grips). A drawing tool never shows
+  // handles for what you just drew — that would clutter the next stroke. Text keeps its box
+  // while the Text tool is active, because that is how you see and drag the text you edit.
+  for (const l of layers) if (tool === 'move') drawLayerOutline(l, selL.has(l.id), !selL.has(l.id));
+  for (const s of shapes) if (tool === 'move') drawShapeOutline(s, selS.has(s.id), !selS.has(s.id));
   for (const t of texts) if (tool === 'move' || t.id === selText) drawSelection(t, !(t.id === selText));
   if (tool === 'move' && hoverId && !selL.has(hoverId)) {
     const hl = layers.find(l => l.id === hoverId);
@@ -878,8 +881,8 @@ function renderChrome() {
   else if (selection) drawSelectionOverlay(selection);
   for (const b of blobs) drawBlob(b);                        // UI only
   // Centre grips are drawn LAST and picked FIRST, so they always sit on/above every other handle.
-  for (const l of layers) if (tool === 'move' || selL.has(l.id)) drawLayerGrip(l, l.id === selLayer);
-  for (const s of shapes) if (tool === 'move' || selS.has(s.id)) { const c = shapeHandlePoints(s).c; drawCenterGrip(c[0], c[1], s.id === selShape); }
+  for (const l of layers) if (tool === 'move') drawLayerGrip(l, l.id === selLayer);
+  for (const s of shapes) if (tool === 'move') { const c = shapeHandlePoints(s).c; drawCenterGrip(c[0], c[1], s.id === selShape); }
   for (const t of texts) if (tool === 'move' || t.id === selText) { const b = textRect(t); drawCenterGrip(b.x + b.w / 2, b.y + b.h / 2, t.id === selText); }
 }
 
@@ -900,7 +903,7 @@ const RAIL_ROWS = {
   crop:      ['cropBtns'],
   blob:      ['blobSizeRow', 'blobStrengthRow'],
   move:      ['layerOrderRow', 'layerActRow'],
-  marquee:   ['selOpsRow'],
+  marquee:   ['cloneBtn', 'selOpsRow', 'fxPixelRow', 'fxPixelBtn', 'fxBlurRow', 'fxBlurBtn', 'bgBtn'],
 };
 const railEl = IS_MOBILE ? $('#rail') : null;    // null on desktop: the sheet is the only home
 const railHome = new Map();                      // node -> where it lives when not on the rail
@@ -914,9 +917,10 @@ function syncRail(id) {
     if (!railHome.has(node)) railHome.set(node, node.parentElement);
     railEl.appendChild(node);
   }
-  // A drawing tool's whole Style section now lives in the rail, so the sheet's copy
-  // would be a bare heading — hide it. Text keeps its Font / size / background block.
-  if (id !== 'text') $('#styleSec').hidden = true;
+  // Sections whose rows now live in the rail would be bare headings in the sheet.
+  // Text keeps its Font / size / background block; Select keeps its Adjust / Resize.
+  $('#styleSec').hidden = id !== 'text';
+  $('#fxSec').hidden = id === 'marquee';
 }
 
 /* -------------------------------------------------------------- 8  pointer */
@@ -1080,7 +1084,9 @@ function onPointerDown(e) {
   }
   if (tool === 'text') {
     const hit = hitText(p);
-    if (hit) { selectText(hit); startTextDrag(hit, p, e); return; }
+    // Writing, not moving: tapping existing text re-opens the editor. Repositioning it is the
+    // Move tool's job (which is also where the Duplicate/Delete bar appears).
+    if (hit) { selectText(hit); openTextEditor(hit, snapshot(), false); return; }
     createTextBox(p); return;
   }
   if (tool === 'blob') {
@@ -1358,7 +1364,9 @@ function openTextEditor(t, pre, isNew) {
   const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px';
                        ta.style.width = Math.max(60, ta.scrollWidth + 10) + 'px'; };
   ta.addEventListener('input', grow); grow();
-  setTimeout(() => ta.focus({ preventScroll:true }), 0);
+  // Focus synchronously, inside the tap that opened the box: iOS (and Orion) only raise the
+  // on-screen keyboard for a focus() in the same task as the user gesture — never from a timer.
+  ta.focus({ preventScroll: true });
   const commit = () => {
     const v = ta.value;
     if (ta.parentNode) ta.remove();
@@ -1410,7 +1418,9 @@ function updateSelBar() {
   const bar = $('#selbar');
   const t = texts.find(x => x.id === selText);
   const s = selectedShape();
-  if ((!t && !s) || tool === 'crop') { bar.hidden = true; return; }
+  // Only the Move tool gets the floating bar. While drawing, or while writing text, it would sit
+  // right on top of what you are making — Duplicate/Delete/Edit all live here, in Move.
+  if ((!t && !s) || tool !== 'move') { bar.hidden = true; return; }
   $('#selEdit').style.display = t ? '' : 'none';      // an annotation has no text to edit
   const r = view.getBoundingClientRect(), sr = stage.getBoundingClientRect();
   const scale = viewScale();
@@ -1478,6 +1488,24 @@ function applyCompositeEffect(kind) {
 }
 function applyPixelate() { applyCompositeEffect('pixelate'); }
 function applyBlur()     { applyCompositeEffect('blur'); }
+
+// Phone-only: lift a copy of the selection into its own layer, so it can be dragged with the
+// Move tool. Shaped like the effects above (raw pixels, no filter — the global Adjust pass
+// re-applies it once), but it keeps annotations, so it clones what you actually see.
+function cloneSelection() {
+  if (!hasImage) return;
+  const r = regionRect();
+  if (r.w < 2 || r.h < 2) return;
+  pushUndo();
+  const src = composite(true, false);
+  const patch = canvas(r.w, r.h);
+  patch.getContext('2d').drawImage(src, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+  const l = { id: uid(), c: patch, x: r.x, y: r.y, w: r.w, h: r.h };
+  layers.push(l); checkedLayers.add(l.id);
+  setSelection([l.id]);
+  render();
+  toast('Cloned — pick Move to drag it');
+}
 
 // Bake the adjustments as a layer: the whole final image, or just the selection.
 // The patch already holds the filtered pixels, so the sliders reset — otherwise
@@ -2112,7 +2140,10 @@ async function syncBgSection() {
   let up = false;
   try { const r = await fetch(bgProbeUrl, { method:'GET', cache:'no-store' }); up = r.status < 500 || r.status > 504; }
   catch { up = false; }
-  $('#bgSec').hidden = !up;
+  // On a phone the Remove-BG button moves to the Select rail, so hide the button itself too —
+  // hiding only the section would leave a live-looking button that errors when the sidecar is down.
+  $('#bgSec').hidden = !up || tool === 'marquee';
+  $('#bgBtn').hidden = !up;
   return up;
 }
 async function removeBgServer() {
@@ -2199,7 +2230,7 @@ function resizeView() {
   $('#rw').value = base.width; $('#rh').value = base.height;
   aspect = base.width / base.height;
   syncOverlaySize();
-  zoomHud.hidden = false;
+  if (zoomHud) zoomHud.hidden = false;
   if (changed) fitView(false);          // a new size starts fitted...
   else { clampPan(); applyView(); }     // ...an unchanged size keeps the user's zoom
 }
@@ -2283,7 +2314,7 @@ function clearEverything() {
   renderChrome();
   $('#hint').style.display = '';
   $('#dialog').hidden = true;
-  zoom = fitZoom = 1; pan.x = pan.y = 0; atFit = true; zoomHud.hidden = true; cacheSigVal = null;
+  zoom = fitZoom = 1; pan.x = pan.y = 0; atFit = true; if (zoomHud) zoomHud.hidden = true; cacheSigVal = null;
   updateHistoryUI(); updateSelInfo(); updateLayerUI(); syncAdjustUI();
   toast('Cleared');
 }
@@ -2508,6 +2539,8 @@ function wire() {
   $('#selClearBtn').onclick = clearSelection;
   $('#fxPixelBtn').onclick = applyPixelate;
   $('#fxBlurBtn').onclick = applyBlur;
+  const cloneBtn = $('#cloneBtn');            // phone-only Select action
+  if (cloneBtn) cloneBtn.onclick = cloneSelection;
   $('#undoBtn').onclick = undo;
   $('#redoBtn').onclick = redo;
   $('#rotL').onclick = () => rotate(-90);
@@ -2593,11 +2626,12 @@ function wire() {
   window.addEventListener('dragover', e => e.preventDefault());
   window.addEventListener('drop', e => e.preventDefault());
 
-  // zoom + pan
-  $('#zoomOut').onclick = () => setZoom(zoom / 1.25);
-  $('#zoomIn').onclick  = () => setZoom(zoom * 1.25);
-  $('#zoomFit').onclick = () => fitView();
-  $('#zoomPct').onclick = () => setZoom(1);
+  // zoom buttons — desktop only; the phone has no HUD, it pinches to zoom/pan instead
+  const zOut = $('#zoomOut'), zIn = $('#zoomIn'), zFit = $('#zoomFit');
+  if (zOut) zOut.onclick = () => setZoom(zoom / 1.25);
+  if (zIn)  zIn.onclick  = () => setZoom(zoom * 1.25);
+  if (zFit) zFit.onclick = () => fitView();
+  if (zoomPct) zoomPct.onclick = () => setZoom(1);
   stage.addEventListener('wheel', e => {
     if (!hasImage) return;
     e.preventDefault();
@@ -2657,7 +2691,7 @@ decorateActionButtons();
 buildFontOptions();
 wire();
 if (IS_MOBILE) setRange('width', style.width);   // a 6px stroke is invisible under a fingertip
-setTool('move');
+setTool(IS_MOBILE ? 'brush' : 'move');   // the phone opens on the Pen, ready to mark up
 syncAdjustUI();
 updateLayerUI();
 updateSelInfo();

@@ -38,13 +38,6 @@ button { min-height:44px; padding:9px 10px; }
 .ai { display:inline-flex; }
 #topbar button svg { width:18px; height:18px; }
 #sheetToggle { display:inline-flex; }
-#deskLink {
-  display:inline-flex; align-items:center; justify-content:center; flex:none;
-  width:44px; height:44px; border-radius:6px; color:var(--muted);
-  background:var(--btn); border:1px solid var(--line); text-decoration:none;
-}
-#deskLink svg { width:18px; height:18px; }
-#deskLink:active { background:#34353b; }
 
 /* --------------------------------------------------------------- tool dock */
 /* Tools live at the bottom, under the thumb. Annotations are the lower row,
@@ -128,7 +121,6 @@ aside#panel .note { display:none; }
 #exportFooter #outSec > h3, #exportFooter #outSec > .row { grid-column:1 / -1; }
 
 /* --------------------------------------------------------- canvas furniture */
-#zoomHud button { min-height:40px; padding:8px 12px; font-size:13px; }
 #selbar button { min-height:44px; padding:9px 13px; }
 #toast { bottom:calc(var(--dock-h, 0px) + 64px + var(--safe-b)); }
 #hint { font-size:15px; }

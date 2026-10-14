@@ -114,6 +114,7 @@ async function main() {
      btnH:document.querySelector('#undoBtn').getBoundingClientRect().height,
      toolW:document.querySelector('#tools [data-tool]').getBoundingClientRect().width,
      scrollable:document.documentElement.scrollHeight > window.innerHeight + 1,
+     deskLink:!!document.querySelector('#deskLink'), zoomHud:!!document.querySelector('#zoomHud'), tool:tool,
      hint:document.querySelector('#hint').textContent.trim()})`);
   check("body advertises the mobile shell", shell.shell === "mobile", shell.shell);
   check("phone shell has a topbar and a dock, no desktop header",
@@ -123,6 +124,8 @@ async function main() {
   check("touch targets are >= 44px", shell.btnH >= 44 && shell.toolW >= 44, { h: shell.btnH, w: shell.toolW });
   check("the page itself cannot scroll", shell.scrollable === false);
   check("the empty hint is phone-appropriate", /choose a photo/i.test(shell.hint), shell.hint);
+  check("the phone drops the desktop link and the zoom HUD", shell.deskLink === false && shell.zoomHud === false, shell);
+  check("the phone opens on the Pen tool", shell.tool === "brush", shell.tool);
   await shot("/tmp/mo-1-empty.png");
 
   // ---- 3. sheet geometry ----
@@ -159,7 +162,7 @@ async function main() {
      aboveRows:Math.round(r.getBoundingClientRect().bottom)<=Math.round(document.querySelector('#tools').getBoundingClientRect().top)+1,
      backdrop:document.querySelector('#backdrop').classList.contains('show')}})()`);
   check("the options rail exists above the dock's tool rows", rail0.exists && rail0.visible && rail0.aboveRows, rail0);
-  check("the rail starts on the Move tool's layer controls", rail0.ids.join() === "layerOrderRow,layerActRow", rail0.ids);
+  check("the rail starts on the Pen's style controls", rail0.ids.join() === "colorRow,widthRow,opacityRow,fillRow", rail0.ids);
   check("the rail is non-modal (no backdrop shown)", rail0.backdrop === false);
 
   const wdef = await evaluate(`({w:document.querySelector('#width').value, out:document.querySelector('#widthOut').textContent, sw:style.width})`);
@@ -180,9 +183,12 @@ async function main() {
   check("the Wand puts colour + tolerance + transparent in the rail", railWand === "wandColorRow,tolRow,wandTransRow", railWand);
   await shot("/tmp/mo-2b-rail.png");
 
-  await evaluate(`document.querySelector('[data-tool=move]').click()`); await sleep(200);
+  await evaluate(`document.querySelector('[data-tool=marquee]').click()`); await sleep(250);
+  const railSel = await evaluate(`[...document.querySelector('#rail').children].map(c=>c.id).join()`);
+  check("the Select rail leads with Clone, then the pixelate/blur/remove-bg controls",
+    railSel === "cloneBtn,selOpsRow,fxPixelRow,fxPixelBtn,fxBlurRow,fxBlurBtn,bgBtn", railSel);
 
-  // ---- 4. load an image, then the tool gestures ----
+  await evaluate(`document.querySelector('[data-tool=move]').click()`); await sleep(200);
   const raw = new Uint8Array(await Deno.readFile(`${FIX}/edtest.png`));
   let bin = ""; for (let i = 0; i < raw.length; i += 8192) bin += String.fromCharCode(...raw.subarray(i, i + 8192));
   await evaluate(`window.__png='${btoa(bin)}'`);
@@ -202,6 +208,14 @@ async function main() {
   const drew = await evaluate(`(()=>{const a=vctx.getImageData(0,0,view.width,view.height).data,b=window.__snap;let n=0;
      for(let i=0;i<a.length;i+=4){if(Math.abs(a[i]-b[i])>12||Math.abs(a[i+1]-b[i+1])>12||Math.abs(a[i+2]-b[i+2])>12)n++;}return n;})()`);
   check("a one-finger drag draws with the active tool", drew > 300, { changed: drew });
+  // The stroke is selected (so the rail's Width/Colour apply to it) but must show no handles.
+  const penChrome = await evaluate(`(function(){const s=shapes[shapes.length-1], z=zoom, d=chromeDpr;
+     const c=shapeHandlePoints(s).c, X=Math.round((c[0]*z+pan.x)*d), Y=Math.round((c[1]*z+pan.y)*d);
+     const img=cctx.getImageData(X-2,Y-2,5,5).data; let n=0;
+     for(let i=0;i<img.length;i+=4) if(img[i]>235&&img[i+1]>235&&img[i+2]>235) n++;
+     return {selected:selShape===s.id, grip:n};})()`);
+  check("a drawing tool shows no handles for the stroke it just drew",
+    penChrome.selected === true && penChrome.grip === 0, penChrome);
   await shot("/tmp/mo-3-draw.png");
   await evaluate(`undo()`); await sleep(200);
 
@@ -216,6 +230,23 @@ async function main() {
   await evaluate(`(function(){const t=document.querySelector('textarea.textinput'); if(t) t.blur(); return 1;})()`);
   await sleep(350);
   check("the typed text is committed", (await evaluate(`texts.length`)) === 1, await evaluate(`texts.length`));
+  // iOS/Orion only raise the keyboard when focus() runs inside the tap, never from a timer.
+  const syncFocus = await evaluate(`(function(){createTextBox({x:80,y:80});
+     const ta=document.querySelector('textarea.textinput');
+     const ok = !!ta && document.activeElement === ta;
+     if (ta) ta.blur();
+     return ok;})()`);
+  check("the text editor focuses synchronously (so iOS raises the keyboard)", syncFocus === true, syncFocus);
+
+  // Tapping existing text in Text mode re-opens the editor rather than dragging it (Move does that).
+  await evaluate(`document.querySelector('[data-tool=text]').click()`); await sleep(150);
+  const tb = await evaluate(`(function(){const b=textRect(texts[0]), r=view.getBoundingClientRect(), s=r.width/view.width;
+     return {x:r.left+(b.x+b.w/2)*s, y:r.top+(b.y+b.h/2)*s};})()`);
+  await tap(tb.x, tb.y);
+  const reedit = await evaluate(`({editor:!!document.querySelector('textarea.textinput'), n:texts.length})`);
+  check("tapping existing text in Text mode re-opens the editor", reedit.editor === true && reedit.n === 1, reedit);
+  await evaluate(`(function(){const ta=document.querySelector('textarea.textinput'); if(ta) ta.blur();})()`);
+  await sleep(200);
 
   // ---- 5. two-finger navigation ----
   await evaluate(`document.querySelector('[data-tool=brush]').click(); clearShapeSel(); shapes=[]; updateLayerUI(); render();`);
@@ -240,6 +271,41 @@ async function main() {
   const cm = await evaluate(`({...crop})`);
   check("touch creates a crop selection", cm.w > 50 && cm.h > 50, cm);
   await evaluate(`cancelCrop()`);
+
+  // ---- 6b. Clone lifts the selection into its own layer, ready for Move ----
+  await evaluate(`document.querySelector('[data-tool=marquee]').click()`); await sleep(200);
+  await evaluate(`selection = { x:400, y:300, w:300, h:200 }; updateSelInfo(); render();`);
+  const nBefore = await evaluate(`layers.length`);
+  await evaluate(`document.querySelector('#cloneBtn').click()`); await sleep(300);
+  const cloned = await evaluate(`(function(){const l=layers[layers.length-1];
+     const c=l.c.getContext('2d').getImageData(0,0,l.w,l.h).data; let n=0;
+     for(let i=3;i<c.length;i+=4*97) if(c[i]>0) n++;
+     return {n:layers.length, x:l.x, y:l.y, w:l.w, h:l.h, sel:selLayer===l.id, painted:n};})()`);
+  check("Clone drops the selection into its own layer at the same spot",
+    cloned.n === nBefore + 1 && cloned.x === 400 && cloned.y === 300 && cloned.w === 300 && cloned.h === 200
+    && cloned.sel === true && cloned.painted > 0, cloned);
+
+  // ---- 6c. the Duplicate/Delete bar is Move-only ----
+  await evaluate(`document.querySelector('[data-tool=brush]').click(); shapes=[]; clearShapeSel(); selText=null; render();`);
+  await sleep(150);
+  const vb = await evaluate(`view.getBoundingClientRect().toJSON()`);
+  await touchDrag(vb.left + vb.width * 0.2, vb.top + vb.height * 0.2, vb.left + vb.width * 0.55, vb.top + vb.height * 0.45);
+  check("drawing leaves the Duplicate/Delete bar hidden",
+    (await evaluate(`document.querySelector('#selbar').hidden`)) === true);
+  await evaluate(`document.querySelector('[data-tool=move]').click(); selectShape(shapes[0]); render();`);
+  const mvBar = await evaluate(`({hidden:document.querySelector('#selbar').hidden,
+     edit:getComputedStyle(document.querySelector('#selEdit')).display,
+     del:getComputedStyle(document.querySelector('#selDel')).display})`);
+  check("Move shows Delete (not Edit) on a selected stroke",
+    mvBar.hidden === false && mvBar.edit === 'none' && mvBar.del !== 'none', mvBar);
+
+  await evaluate(`document.querySelector('[data-tool=text]').click(); createTextBox({x:120,y:120});`);
+  await sleep(120);
+  await evaluate(`(function(){const ta=document.querySelector('textarea.textinput'); ta.value='Hi'; ta.dispatchEvent(new Event('input')); ta.blur();})()`);
+  await sleep(200);
+  await evaluate(`document.querySelector('[data-tool=move]').click(); selectText(texts[texts.length-1]); render();`);
+  const txBar = await evaluate(`({hidden:document.querySelector('#selbar').hidden, edit:getComputedStyle(document.querySelector('#selEdit')).display})`);
+  check("Move shows Edit on a selected text box", txBar.hidden === false && txBar.edit !== 'none', txBar);
 
   await shot("/tmp/mo-4-final.png");
   check("no uncaught page exceptions", exceptions.length === 0, exceptions.slice(0, 4));
