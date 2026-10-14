@@ -136,7 +136,7 @@ let selShape = null;             // primary (last-clicked) annotation id
 let selShapes = [];              // full annotation multi-selection
 
 let blobs = [];                  // distort markers: UI only, never exported
-const style = { color:'#ff3b30', width:6, opacity:1, filled:false, fontSize:48, family:'Anton', bold:false, italic:false,
+const style = { color:'#ff3b30', width: IS_MOBILE ? 16 : 6, opacity:1, filled:false, fontSize:48, family:'Anton', bold:false, italic:false,
                 bg:null, bgOpacity:0.8, pad:14, radius:10 };
 const wand = { tolerance:22, global:false, transparent:true, color:'#ff3b30' };
 const fx = { block:14, soft:8 };     // pixelate block size, blur radius
@@ -883,6 +883,42 @@ function renderChrome() {
   for (const t of texts) if (tool === 'move' || t.id === selText) { const b = textRect(t); drawCenterGrip(b.x + b.w / 2, b.y + b.h / 2, t.id === selText); }
 }
 
+/* ------------------------------------------------------- mobile options rail */
+// On a phone the active tool's quick controls live in a rail pinned above the dock:
+// always reachable, and never covering the canvas, so you watch the stroke change as
+// you drag. The rows below are the *same* nodes the sheet uses, moved here by id —
+// one source of truth for every value, and nothing to keep in sync.
+const RAIL_ROWS = {
+  text:      ['colorRow', 'fontSizeRow', 'boldItalicRow'],
+  brush:     ['colorRow', 'widthRow', 'opacityRow', 'fillRow'],
+  highlight: ['colorRow', 'widthRow', 'opacityRow', 'fillRow'],
+  line:      ['colorRow', 'widthRow', 'opacityRow', 'fillRow'],
+  arrow:     ['colorRow', 'widthRow', 'opacityRow', 'fillRow'],
+  rect:      ['colorRow', 'widthRow', 'opacityRow', 'fillRow'],
+  ellipse:   ['colorRow', 'widthRow', 'opacityRow', 'fillRow'],
+  wand:      ['wandColorRow', 'tolRow', 'wandTransRow'],
+  crop:      ['cropBtns'],
+  blob:      ['blobSizeRow', 'blobStrengthRow'],
+  move:      ['layerOrderRow', 'layerActRow'],
+  marquee:   ['selOpsRow'],
+};
+const railEl = IS_MOBILE ? $('#rail') : null;    // null on desktop: the sheet is the only home
+const railHome = new Map();                      // node -> where it lives when not on the rail
+function syncRail(id) {
+  if (!railEl) return;
+  const wanted = RAIL_ROWS[id] || [];
+  for (const [node, home] of railHome)             // send anything not wanted back home
+    if (!wanted.includes(node.id) && node.parentElement !== home) home.appendChild(node);
+  for (const rid of wanted) {                      // then stack the wanted rows, in order
+    const node = $('#' + rid); if (!node) continue;
+    if (!railHome.has(node)) railHome.set(node, node.parentElement);
+    railEl.appendChild(node);
+  }
+  // A drawing tool's whole Style section now lives in the rail, so the sheet's copy
+  // would be a bare heading — hide it. Text keeps its Font / size / background block.
+  if (id !== 'text') $('#styleSec').hidden = true;
+}
+
 /* -------------------------------------------------------------- 8  pointer */
 const PANES = { tool:'#paneTool', layers:'#paneLayers', image:'#paneImage' };
 function setTab(name) {
@@ -915,6 +951,7 @@ function setTool(id) {
   $('#toolHint').hidden = !!(opts || crop);
   if (TOOL_TAB[id]) setTab(TOOL_TAB[id]);           // Move -> Layers, Select -> Image
   else if (opts) setTab('tool');                    // drawing / wand / crop / blob -> its options
+  syncRail(id);                                     // phone: swap the rail to this tool's controls
   if (id === 'highlight' && $('#opacity').value === '1') setRange('opacity', 0.4);
   if (id !== 'move' && id !== 'text') { selText = null; clearShapeSel(); }
   else if (id === 'text') clearShapeSel();          // text tool: keep the text box, drop annotations
@@ -2619,6 +2656,7 @@ buildToolButtons();
 decorateActionButtons();
 buildFontOptions();
 wire();
+if (IS_MOBILE) setRange('width', style.width);   // a 6px stroke is invisible under a fingertip
 setTool('move');
 syncAdjustUI();
 updateLayerUI();

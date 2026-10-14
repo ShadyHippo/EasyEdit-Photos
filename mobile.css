@@ -62,6 +62,29 @@ button { min-height:44px; padding:9px 10px; }
 #tools button, #annTools button { flex:0 0 auto; min-width:46px; justify-content:center; padding:9px 6px; }
 #tools button svg, #annTools button svg { width:20px; height:20px; margin:0; }
 
+/* ------------------------------------------------------------ options rail */
+/* The active tool's quick controls, pinned above the tool rows. It is NOT modal:
+   the canvas stays fully visible, so you watch the stroke change as you drag.
+   The rows it holds are the very same nodes the sheet uses — app.js just relocates
+   them by id (see syncRail), so there is one source of truth for every value. */
+#rail {
+  display:flex; align-items:center; gap:10px;
+  padding:5px 8px; margin-bottom:2px;
+  background:var(--tier); border-bottom:1px solid var(--line);
+  overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none; touch-action:pan-x;
+}
+#rail::-webkit-scrollbar { display:none; }
+#rail:empty { display:none; }
+#rail label { display:flex; align-items:center; gap:6px; white-space:nowrap; font-size:12px; color:var(--fg); flex:none; }
+#rail .row { display:flex; gap:5px; flex:none; }
+#rail input[type=range] { width:92px; flex:none; height:32px; accent-color:var(--accent); }
+#rail input[type=color] { width:34px; height:30px; padding:0; border:1px solid var(--line); border-radius:6px; background:none; flex:none; }
+#rail input[type=checkbox] { width:20px; height:20px; }
+#rail input[type=number], #rail select { font-size:14px; padding:6px 7px; }
+#rail select { max-width:132px; }
+#rail button { min-height:34px; padding:5px 10px; font-size:12px; }
+#rail output { width:auto; min-width:22px; }
+
 /* ----------------------------------------------------------------- the sheet */
 /* Sits above the dock, so you can change settings without losing the tools. */
 aside#panel {
@@ -109,3 +132,14 @@ aside#panel .note { display:none; }
 #selbar button { min-height:44px; padding:9px 13px; }
 #toast { bottom:calc(var(--dock-h, 0px) + 64px + var(--safe-b)); }
 #hint { font-size:15px; }
+
+/* ------------------------------------------------------------ landscape */
+/* A landscape phone is only ~390px tall, so trim the chrome: the rail adds a row,
+   and without this the canvas would be squeezed to almost nothing. */
+@media (max-height:480px) {
+  #topbar { padding:calc(3px + var(--safe-t)) 8px 3px; }
+  button { min-height:38px; }
+  #dock { padding:4px 8px calc(4px + var(--safe-b)); gap:4px; }
+  #rail { padding:3px 8px; }
+  #tools button, #annTools button { min-width:40px; padding:6px 5px; }
+}

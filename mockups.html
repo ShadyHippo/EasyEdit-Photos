@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Easy Edit — mobile options, 3 directions</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; background:#141518; color:#e7e7ea; padding:22px 24px 40px;
+         font:13px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:#9a9ba1; margin:0 0 22px; max-width:900px; }
+  .sub b { color:#e7e7ea; }
+  .gallery { display:flex; gap:30px; align-items:flex-start; overflow-x:auto; padding-bottom:14px; }
+  .col { flex:none; width:390px; }
+  .col h2 { font-size:14px; margin:0; }
+  .col .tag { color:#f59e0b; font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; font-weight:700; }
+  .col p.desc { color:#9a9ba1; font-size:12px; margin:6px 0 10px; min-height:66px; }
+  .legend { margin:0 0 12px; padding:0; list-style:none; color:#9a9ba1; font-size:11.5px; display:flex; flex-direction:column; gap:3px; }
+  .legend b { color:#f59e0b; }
+
+  /* ---- phone frame ---- */
+  .phone { width:390px; height:770px; background:#1b1c1f; border:1px solid #34353a; border-radius:26px;
+           overflow:hidden; display:flex; flex-direction:column; position:relative; box-shadow:0 22px 55px #0009; }
+  .topbar { flex:none; display:flex; align-items:center; gap:6px; padding:8px; background:#232428; border-bottom:1px solid #34353a; }
+  .brand { display:flex; align-items:center; gap:6px; font-weight:700; font-size:12px; }
+  .logo { width:20px; height:20px; border-radius:5px; background:linear-gradient(135deg,#f59e0b,#fbbf24); }
+  .sp { flex:1; }
+  .tbtn { height:36px; min-width:36px; padding:0 9px; border:1px solid #34353a; background:#2c2d32; color:#e7e7ea;
+          border-radius:7px; display:inline-flex; align-items:center; justify-content:center; font:inherit; font-size:11px; cursor:pointer; }
+  .tbtn.primary { background:#f59e0b; border-color:#f59e0b; color:#221704; font-weight:600; }
+  .tbtn svg { width:17px; height:17px; }
+
+  /* ---- canvas ---- */
+  .canvas { flex:1; position:relative; background:repeating-conic-gradient(#2a2b2f 0% 25%,#26272b 0% 50%) 50%/22px 22px; overflow:hidden; }
+  .photo { position:absolute; inset:8% 4%; border-radius:4px; box-shadow:0 0 0 1px #0008; overflow:hidden; background:#3b6ea5; }
+  .photo svg { display:block; width:100%; height:100%; }
+  .canvas-hint { position:absolute; left:50%; bottom:10px; transform:translateX(-50%); color:#c9cad0; font-size:10.5px;
+                 background:#111a; border:1px solid #34353a; border-radius:8px; padding:4px 9px; white-space:nowrap; }
+
+  /* ---- dock ---- */
+  .dock { flex:none; background:#232428; border-top:1px solid #34353a; padding:6px 8px; display:flex; flex-direction:column; gap:5px; }
+  .trow { display:flex; gap:4px; align-items:center; }
+  .tool { flex:0 0 auto; width:44px; height:42px; border:1px solid #34353a; background:#2c2d32; color:#e7e7ea;
+          border-radius:7px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; }
+  .tool svg { width:20px; height:20px; }
+  .tool.active { background:#f59e0b; border-color:#f59e0b; color:#221704; }
+  .tool:hover, .mini:hover, .tbtn:hover { background:#34353b; }
+  .tool.active:hover { background:#fbbf24; }
+
+  /* ---- shared mock controls ---- */
+  .sw { width:26px; height:26px; border-radius:6px; border:1px solid #0008; flex:none; }
+  .mini { height:28px; padding:0 9px; border:1px solid #34353a; background:#2c2d32; color:#e7e7ea; border-radius:6px;
+          font:inherit; font-size:11px; cursor:pointer; white-space:nowrap; flex:none; display:inline-flex; align-items:center; gap:5px; }
+  .mini.primary { background:#f59e0b; border-color:#f59e0b; color:#221704; font-weight:600; }
+  .mini.danger { background:#ef4444; border-color:#ef4444; color:#fff; }
+  .mockrange { accent-color:#f59e0b; width:84px; flex:none; }
+  .lbl { color:#9a9ba1; font-size:9.5px; text-transform:uppercase; letter-spacing:.06em; flex:none; }
+  .div { width:1px; height:22px; background:#34353a; flex:none; }
+  .chk { display:inline-flex; align-items:center; gap:5px; }
+  .chk input { accent-color:#f59e0b; width:16px; height:16px; }
+  output { color:#9a9ba1; font-size:11px; }
+
+  /* ---- badge ---- */
+  .badge { position:absolute; top:-8px; right:10px; width:17px; height:17px; border-radius:50%; background:#f59e0b;
+           color:#221704; font-size:10px; font-weight:800; display:flex; align-items:center; justify-content:center;
+           box-shadow:0 2px 7px #000a; z-index:9; }
+  .badge.mid { top:50%; right:auto; left:10px; transform:translateY(-50%); }
+  .badge.bl { left:10px; right:auto; }
+  .badge.bc { left:50%; right:auto; transform:translateX(-50%); }
+
+  /* ============ A: options rail ============ */
+  .rail { flex:none; position:relative; display:flex; align-items:center; gap:8px; padding:7px 8px;
+          background:#202126; border-top:1px solid #34353a; }
+  .rail-opts { flex:1; display:flex; align-items:center; gap:8px; overflow-x:auto; scrollbar-width:none; }
+  .rail-opts::-webkit-scrollbar { display:none; }
+  .rail .more { flex:none; }
+
+  /* ============ B: swap mode ============ */
+  .optbar { position:relative; display:flex; align-items:center; gap:6px; padding:7px 8px;
+            background:#202126; border-top:1px solid #34353a; }
+  .optbar-opts { flex:1; display:flex; align-items:center; gap:8px; overflow-x:auto; scrollbar-width:none; }
+  .optbar-opts::-webkit-scrollbar { display:none; }
+  .optbar .more { flex:none; }
+  .pickerhint { color:#f59e0b; font-size:10.5px; text-align:center; padding:2px 0 1px; }
+
+  /* ============ C: smart sheet ============ */
+  .dock .more { position:relative; margin-left:auto; }
+  .sheet { flex:none; position:relative; z-index:6; background:#232428;
+           border-top:1px solid #34353a; border-radius:16px 16px 0 0; box-shadow:0 -12px 34px #000a;
+           padding-bottom:8px; }
+  .grab { position:relative; width:38px; height:4px; border-radius:3px; background:#4a4b52; margin:9px auto 5px; }
+  .sheet .tabs { display:flex; gap:2px; padding:2px 10px 0; border-bottom:1px solid #34353a; }
+  .sheet .tab { padding:8px 10px; font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:#9a9ba1;
+                border-bottom:2px solid transparent; cursor:pointer; }
+  .sheet .tab.on { color:#e7e7ea; font-weight:700; border-bottom-color:#f59e0b; }
+  .sheet .body { padding:10px 12px 2px; display:flex; flex-direction:column; gap:9px; max-height:210px; overflow:auto; }
+  .sheet .body .optrow { display:flex; align-items:center; gap:8px; }
+  .backdrop { position:absolute; inset:0; background:#0008; z-index:5; }
+</style>
+</head>
+<body>
+<h1>Mobile options — 3 directions</h1>
+<p class="sub">Same phone, same dark theme, same tools. The only thing that changes is <b>where the options live</b> and
+<b>how you reach them</b>. Tap the tools in any frame — each one is live. The bottom row is the tool dock; the options
+for the active tool are highlighted with a numbered <b>●</b> badge.</p>
+
+<div class="gallery">
+
+  <!-- ============================ A ============================ -->
+  <div class="col">
+    <h2><span class="tag">Direction A</span> · Options rail</h2>
+    <p class="desc">A thin strip pinned <b>above the dock</b>, always visible, that swaps to the active tool's controls.
+      Nothing is modal, so the canvas never gets covered — you watch the stroke change as you drag.</p>
+    <ul class="legend">
+      <li><b>●1</b> Options are always on screen — no tap to reveal.</li>
+      <li><b>●2</b> Canvas stays fully visible while you adjust.</li>
+      <li><b>●3</b> "More" opens the full sheet (layers, effects, resize, export).</li>
+    </ul>
+    <div class="phone" data-dir="A" data-tool="pen">
+      <div class="topbar">
+        <span class="brand"><span class="logo"></span></span>
+        <button class="tbtn" title="Undo">↶</button>
+        <button class="tbtn" title="Redo">↷</button>
+        <span class="sp"></span>
+        <button class="tbtn">New</button>
+        <button class="tbtn primary">Open</button>
+        <button class="tbtn" title="Desktop version">▭</button>
+      </div>
+      <div class="canvas">
+        <div class="photo"></div>
+        <div class="badge mid">2</div>
+        <div class="canvas-hint">live preview while dragging</div>
+      </div>
+      <div class="rail">
+        <span class="badge bl">1</span>
+        <div class="rail-opts"></div>
+        <button class="mini more">More ▾<span class="badge" style="right:-6px;top:-9px">3</span></button>
+      </div>
+      <div class="dock">
+        <div class="trow" data-row="top"></div>
+        <div class="trow" data-row="ann"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ B ============================ -->
+  <div class="col">
+    <h2><span class="tag">Direction B</span> · Swap mode</h2>
+    <p class="desc">The bottom bar has <b>two states</b>. Normally it's the tool picker; pick a tool and it becomes
+      that tool's options. "‹ Tools" goes back. One row of chrome, so the canvas gets the most room.</p>
+    <ul class="legend">
+      <li><b>●1</b> Picking a tool swaps the bar to its options (auto-reveal).</li>
+      <li><b>●2</b> "‹ Tools" returns to the picker.</li>
+      <li><b>●3</b> "More" opens the full sheet.</li>
+    </ul>
+    <div class="phone" data-dir="B" data-tool="pen">
+      <div class="topbar">
+        <span class="brand"><span class="logo"></span></span>
+        <button class="tbtn" title="Undo">↶</button>
+        <button class="tbtn" title="Redo">↷</button>
+        <span class="sp"></span>
+        <button class="tbtn">New</button>
+        <button class="tbtn primary">Open</button>
+        <button class="tbtn" title="Desktop version">▭</button>
+      </div>
+      <div class="canvas">
+        <div class="photo"></div>
+        <div class="canvas-hint">maximum canvas height</div>
+      </div>
+      <div class="dock">
+        <div class="pickerhint">tap a tool →</div>
+        <div class="trow" data-row="top"></div>
+        <div class="trow" data-row="ann"></div>
+        <div class="optbar" hidden>
+          <span class="badge bc">1</span>
+          <button class="mini back">‹ Tools<span class="badge" style="right:-6px;top:-9px">2</span></button>
+          <div class="optbar-opts"></div>
+          <button class="mini more">More ▾<span class="badge" style="right:-6px;top:-9px">3</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ C ============================ -->
+  <div class="col">
+    <h2><span class="tag">Direction C</span> · Smart sheet</h2>
+    <p class="desc">Keep the familiar sheet, but make it behave: it <b>auto-opens on the matching tab</b> when you pick
+      a tool, is capped short so the canvas peeks above, has a grabber to swipe away, and the opener moves into the dock.</p>
+    <ul class="legend">
+      <li><b>●1</b> Opener now lives in the dock (thumb reach), not the top bar.</li>
+      <li><b>●2</b> Sheet auto-opens on tool pick; canvas stays visible above.</li>
+      <li><b>●3</b> Grabber + swipe-down (or backdrop tap) to dismiss.</li>
+    </ul>
+    <div class="phone" data-dir="C" data-tool="pen">
+      <div class="topbar">
+        <span class="brand"><span class="logo"></span></span>
+        <button class="tbtn" title="Undo">↶</button>
+        <button class="tbtn" title="Redo">↷</button>
+        <span class="sp"></span>
+        <button class="tbtn">New</button>
+        <button class="tbtn primary">Open</button>
+        <button class="tbtn" title="Desktop version">▭</button>
+      </div>
+      <div class="canvas">
+        <div class="photo"></div>
+        <div class="backdrop"></div>
+      </div>
+      <div class="sheet">
+        <div class="grab"><span class="badge" style="right:-6px;top:-6px">3</span></div>
+        <div class="tabs">
+          <div class="tab on">Tool</div><div class="tab">Layers</div><div class="tab">Image</div>
+        </div>
+        <div class="body"></div>
+        <span class="badge" style="top:8px;right:12px">2</span>
+      </div>
+      <div class="dock">
+        <div class="trow" data-row="top"></div>
+        <div class="trow" data-row="ann"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const TOP = ['move','select','wand','crop','blob'];
+const ANN = ['text','pen','highlight','line','arrow','rect','ellipse'];
+const ICON = {
+  move:'<path d="M12 3v18M3 12h18M12 3l-2.4 2.4M12 3l2.4 2.4M12 21l-2.4-2.4M12 21l2.4-2.4M3 12l2.4-2.4M3 12l2.4 2.4M21 12l-2.4-2.4M21 12l2.4 2.4"/>',
+  select:'<rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="3 3"/>',
+  wand:'<path d="M15 4V2M15 10V8M12 7h-2M20 7h-2M6 20l9-9M17.5 5.5l1 1"/>',
+  crop:'<path d="M6 2v16h16M2 6h16v16"/>',
+  blob:'<circle cx="12" cy="12" r="5"/><path d="M4 12q4-6 8 0t8 0"/>',
+  text:'<path d="M5 6h14M12 6v12M9 18h6"/>',
+  pen:'<path d="M4 20l4-1 10-10-3-3L5 16z"/><path d="M14 6l3 3"/>',
+  highlight:'<path d="M4 20h6l9-9-5-5-9 9z"/><path d="M11 6l5 5"/>',
+  line:'<path d="M4 20L20 4"/>',
+  arrow:'<path d="M4 20L20 4M20 4h-6M20 4v6"/>',
+  rect:'<rect x="4" y="5" width="16" height="14" rx="2"/>',
+  ellipse:'<ellipse cx="12" cy="12" rx="8" ry="6"/>',
+};
+const svg = p => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+p+'</svg>';
+const PHOTO = '<svg viewBox="0 0 320 400" preserveAspectRatio="xMidYMid slice">'
+  + '<rect width="320" height="400" fill="#4a7fb5"/>'
+  + '<circle cx="252" cy="78" r="34" fill="#ffe9a8" opacity=".92"/>'
+  + '<path d="M-20 250 L90 150 L200 250 Z" fill="#6f8f5a"/>'
+  + '<path d="M130 250 L240 140 L360 250 Z" fill="#587947"/>'
+  + '<rect y="248" width="320" height="152" fill="#7a9a5a"/>'
+  + '<path d="M30 330 q40 -28 80 0 t80 0 t80 0" stroke="#fff" stroke-width="7" fill="none" opacity=".9" stroke-linecap="round"/>'
+  + '</svg>';
+const sw = c => '<span class="sw" style="background:'+c+'"></span>';
+
+function optsHTML(t){
+  switch(t){
+    case 'move':   return '<span class="lbl">Layer</span><button class="mini">Front</button><button class="mini">Up</button><button class="mini">Down</button><button class="mini">Back</button><span class="div"></span><button class="mini">↺</button><button class="mini">↻</button><button class="mini danger">Del</button>';
+    case 'select': return '<button class="mini">Select all</button><button class="mini">Clear</button><span class="lbl">Whole image</span>';
+    case 'wand':   return sw('#ff3b30')+'<span class="lbl">Tol</span><input class="mockrange" type="range" value="22"><output>22</output><label class="mini chk"><input type="checkbox" checked>Transparent</label>';
+    case 'crop':   return '<button class="mini primary">Apply</button><button class="mini">Cancel</button><span class="lbl">drag handles</span>';
+    case 'blob':   return '<span class="lbl">Size</span><input class="mockrange" type="range" value="160"><span class="lbl">Force</span><input class="mockrange" type="range" value="60"><button class="mini">Deep fry</button>';
+    case 'text':   return '<select class="mini"><option>Heavy (Anton)</option></select><span class="lbl">Size</span><input class="mockrange" type="range" value="48"><output>48</output>'+sw('#ff3b30')+'<button class="mini">B</button><button class="mini">I</button><label class="mini chk"><input type="checkbox">BG</label>';
+    default:       return sw('#ff3b30')+'<span class="lbl">W</span><input class="mockrange" type="range" value="16"><output>16</output><span class="lbl">O</span><input class="mockrange" type="range" value="100"><output>1.0</output><label class="mini chk"><input type="checkbox">Fill</label>';
+  }
+}
+
+function buildDock(phone){
+  const rows = { top: TOP, ann: ANN };
+  phone.querySelectorAll('.trow').forEach(row => {
+    (rows[row.dataset.row] || []).forEach(id => {
+      const b = document.createElement('button');
+      b.className = 'tool'; b.dataset.tool = id; b.title = id;
+      b.innerHTML = svg(ICON[id]);
+      row.appendChild(b);
+    });
+  });
+  // C: the "More" opener lives in the dock, right side of the top row
+  if (phone.dataset.dir === 'C') {
+    const top = phone.querySelector('.trow[data-row="top"]');
+    const more = document.createElement('button');
+    more.className = 'mini more'; more.innerHTML = 'More ▾<span class="badge">1</span>';
+    top.appendChild(more);
+  }
+}
+
+function select(phone, id){
+  phone.dataset.tool = id;
+  phone.querySelectorAll('.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === id));
+  const dir = phone.dataset.dir;
+  if (dir === 'A') {
+    phone.querySelector('.rail-opts').innerHTML = optsHTML(id);
+  } else if (dir === 'B') {
+    phone.querySelector('.optbar-opts').innerHTML = optsHTML(id);
+    phone.querySelector('.optbar').hidden = false;
+    phone.querySelectorAll('.trow').forEach(r => r.hidden = true);
+    phone.querySelector('.pickerhint').hidden = true;
+  } else {
+    phone.querySelector('.sheet .body').innerHTML = '<div class="optrow">'+optsHTML(id)+'</div>';
+  }
+}
+
+document.querySelectorAll('.phone').forEach(phone => {
+  buildDock(phone);
+  phone.querySelector('.photo').innerHTML = PHOTO;
+  phone.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => select(phone, b.dataset.tool)));
+  const back = phone.querySelector('.back');
+  if (back) back.addEventListener('click', () => {
+    phone.querySelector('.optbar').hidden = true;
+    phone.querySelectorAll('.trow').forEach(r => r.hidden = false);
+    phone.querySelector('.pickerhint').hidden = false;
+    phone.querySelectorAll('.tool').forEach(b => b.classList.remove('active'));
+  });
+  select(phone, phone.dataset.tool);
+});
+</script>
+</body>
+</html>

@@ -153,6 +153,35 @@ async function main() {
   await evaluate(`document.querySelector('#backdrop').click()`); await sleep(450);
   check("the backdrop closes the sheet", (await evaluate(`document.querySelector('#panel').classList.contains('open')`)) === false);
 
+  // ---- 3b. the options rail: non-modal quick controls pinned above the dock ----
+  const rail0 = await evaluate(`(()=>{const r=document.querySelector('#rail');return {
+     exists:!!r, ids:[...r.children].map(c=>c.id), visible:getComputedStyle(r).display!=='none',
+     aboveRows:Math.round(r.getBoundingClientRect().bottom)<=Math.round(document.querySelector('#tools').getBoundingClientRect().top)+1,
+     backdrop:document.querySelector('#backdrop').classList.contains('show')}})()`);
+  check("the options rail exists above the dock's tool rows", rail0.exists && rail0.visible && rail0.aboveRows, rail0);
+  check("the rail starts on the Move tool's layer controls", rail0.ids.join() === "layerOrderRow,layerActRow", rail0.ids);
+  check("the rail is non-modal (no backdrop shown)", rail0.backdrop === false);
+
+  const wdef = await evaluate(`({w:document.querySelector('#width').value, out:document.querySelector('#widthOut').textContent, sw:style.width})`);
+  check("mobile starts with a 16px stroke", wdef.w === "16" && wdef.out === "16" && wdef.sw === 16, wdef);
+
+  await evaluate(`document.querySelector('[data-tool=brush]').click()`); await sleep(250);
+  const railBrush = await evaluate(`[...document.querySelector('#rail').children].map(c=>c.id).join()`);
+  check("picking Pen swaps the rail to its style controls", railBrush === "colorRow,widthRow,opacityRow,fillRow", railBrush);
+
+  await evaluate(`document.querySelector('[data-tool=text]').click()`); await sleep(250);
+  const railText = await evaluate(`({ids:[...document.querySelector('#rail').children].map(c=>c.id).join(),
+     styleHidden:document.querySelector('#styleSec').hidden, fontShown:document.querySelector('#fontRow').style.display!=='none'})`);
+  check("Text puts colour + size + bold/italic in the rail", railText.ids === "colorRow,fontSizeRow,boldItalicRow", railText);
+  check("Text keeps its font/background block in the sheet", railText.styleHidden === false && railText.fontShown === true, railText);
+
+  await evaluate(`document.querySelector('[data-tool=wand]').click()`); await sleep(250);
+  const railWand = await evaluate(`[...document.querySelector('#rail').children].map(c=>c.id).join()`);
+  check("the Wand puts colour + tolerance + transparent in the rail", railWand === "wandColorRow,tolRow,wandTransRow", railWand);
+  await shot("/tmp/mo-2b-rail.png");
+
+  await evaluate(`document.querySelector('[data-tool=move]').click()`); await sleep(200);
+
   // ---- 4. load an image, then the tool gestures ----
   const raw = new Uint8Array(await Deno.readFile(`${FIX}/edtest.png`));
   let bin = ""; for (let i = 0; i < raw.length; i += 8192) bin += String.fromCharCode(...raw.subarray(i, i + 8192));
