@@ -1,0 +1,168 @@
+/* --- bundled fonts (OFL-1.1, see fonts/LICENSE.txt) - no system or CDN dependency --- */
+  @font-face { font-family:'Anton'; font-style:normal; font-weight:400; font-display:swap; src:url('fonts/anton-400.woff2') format('woff2'); }
+  @font-face { font-family:'Caveat'; font-style:normal; font-weight:400 700; font-display:swap; src:url('fonts/caveat-var.woff2') format('woff2'); }
+  @font-face { font-family:'Comic Neue'; font-style:normal; font-weight:400; font-display:swap; src:url('fonts/comic-neue-400.woff2') format('woff2'); }
+  @font-face { font-family:'Comic Neue'; font-style:normal; font-weight:700; font-display:swap; src:url('fonts/comic-neue-700.woff2') format('woff2'); }
+  @font-face { font-family:'Inter'; font-style:normal; font-weight:400 700; font-display:swap; src:url('fonts/inter-var.woff2') format('woff2'); }
+  @font-face { font-family:'Playfair Display'; font-style:normal; font-weight:400 700; font-display:swap; src:url('fonts/playfair-display-var.woff2') format('woff2'); }
+  @font-face { font-family:'Roboto'; font-style:normal; font-weight:100 900; font-display:swap; src:url('fonts/roboto-var.woff2') format('woff2'); }
+
+  :root {
+    --bg:#1b1c1f; --panel:#232428; --line:#34353a; --fg:#e7e7ea; --muted:#9a9ba1;
+    --accent:#f59e0b; --accent-hi:#fbbf24; --ink:#221704; --danger:#ef4444;
+    --btn:#2c2d32; --field:#2c2d32; --tier:#202126; --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px);
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  /* our own display:flex rules would otherwise beat the UA stylesheet's [hidden] rule */
+  [hidden] { display:none !important; }
+  html,body { height:100%; }
+  body {
+    margin:0; font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    background:var(--bg); color:var(--fg); display:flex; flex-direction:column; height:100vh;
+    overflow:hidden; overscroll-behavior:none;
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
+  }
+  input,textarea,select { -webkit-user-select:text; user-select:text; }
+
+  /* ---------------- header: row 1 (global tools + actions), row 2 (annotate tools) ---------- */
+  header#bar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:8px; background:var(--panel); border-bottom:1px solid var(--line); }
+  #annBar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:7px 8px; background:var(--tier); border-bottom:1px solid var(--line); }
+  #annLbl { color:var(--muted); font-size:10px; font-weight:700; letter-spacing:.09em; text-transform:uppercase; padding:0 6px 0 3px; }
+  #brand { display:flex; align-items:center; gap:7px; font-weight:700; letter-spacing:.01em; white-space:nowrap; padding:0 10px 0 2px; }
+  #brand img { width:22px; height:22px; display:block; border-radius:5px; }
+  .spacer { flex:1; }
+  .group { display:flex; gap:4px; flex-wrap:wrap; align-items:center; }
+  .gsep { width:1px; height:22px; background:var(--line); margin:0 4px; flex:none; }
+  .ai { display:none; }        /* action-button icons are only shown by the mobile shell */
+
+  button {
+    font:inherit; color:var(--fg); background:var(--btn); border:1px solid var(--line);
+    padding:6px 10px; border-radius:6px; cursor:pointer; white-space:nowrap; min-height:34px;
+    display:inline-flex; align-items:center; gap:0;
+  }
+  button:hover { background:#34353b; }
+  button:disabled { opacity:.4; cursor:default; }
+  button.active { background:var(--accent); border-color:var(--accent); color:var(--ink); font-weight:600; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:var(--ink); font-weight:600; }
+  button.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
+  button svg { width:16px; height:16px; flex:none; }
+  #tools button svg, #annTools button svg { margin-right:6px; }
+  /* hotkey badge: a real box, baseline-aligned with the label, so it lines up on every button */
+  .k { display:inline-block; margin:0 1px 0 0; padding:0 2px; min-width:13px; text-align:center;
+       border:1px solid #3f4046; border-radius:3px; background:#31323a;
+       font-size:10px; line-height:14px; font-weight:600; color:var(--muted); }
+  button.active .k { color:var(--ink); border-color:#00000030; background:#ffffff3d; }
+
+  main { flex:1; display:flex; min-height:0; }
+  #stage {
+    flex:1; min-width:0; position:relative; overflow:hidden;
+    background:repeating-conic-gradient(#2a2b2f 0% 25%, #26272b 0% 50%) 50%/22px 22px;
+    touch-action:none;
+  }
+  #stage.dragover { outline:2px dashed var(--accent); outline-offset:-8px; }
+  #view { display:none; position:absolute; left:0; top:0; transform-origin:0 0; background:#000;
+          touch-action:none;
+          -webkit-user-drag:none; user-select:none; box-shadow:0 0 0 1px #0007; }
+  /* UI chrome (outlines, handles, grips) lives on its own stage-sized canvas, in screen space, so
+     handles on objects dragged outside the image are still drawn and still grabbable. */
+  #chrome { display:none; position:absolute; left:0; top:0; z-index:5; pointer-events:none; }
+  #zoomHud { position:absolute; left:10px; bottom:10px; z-index:8; display:flex; gap:4px;
+             background:#111c; border:1px solid var(--line); border-radius:8px; padding:3px;
+             backdrop-filter:blur(4px); }
+  #zoomHud button { min-height:26px; padding:2px 8px; font-size:12px; }
+  #zoomPct { min-width:52px; }
+  #hint { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+          text-align:center; color:var(--muted); font-size:15px; pointer-events:none; padding:24px; }
+  #hint b { color:var(--fg); }
+
+  .textinput {
+    position:absolute; z-index:6; min-width:60px; padding:2px 4px; background:rgba(0,0,0,.35);
+    border:1px dashed var(--accent); border-radius:3px; outline:none; resize:none; overflow:hidden;
+    white-space:pre; color:#fff; line-height:1.15;
+  }
+  #selbar {
+    position:absolute; z-index:7; display:flex; gap:4px; background:#111d; border:1px solid var(--line);
+    border-radius:8px; padding:4px; backdrop-filter:blur(4px);
+  }
+  #selbar button { min-height:30px; padding:4px 9px; }
+
+  /* ---------------- panel: tabs, panes, sticky export footer ---------------- */
+  aside#panel { width:280px; flex:none; background:var(--panel); border-left:1px solid var(--line);
+                display:flex; flex-direction:column; overflow:hidden; }
+  #tabs { display:flex; gap:1px; padding:8px 8px 0; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .tab { padding:7px 10px; font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
+         background:none; border:1px solid transparent; border-bottom:none; border-radius:7px 7px 0 0;
+         cursor:pointer; white-space:nowrap; min-height:auto; }
+  .tab:hover { color:var(--fg); background:none; }
+  .tab.on { color:var(--fg); font-weight:700; border-color:var(--line); background:var(--panel);
+            position:relative; top:1px; }
+  .tab.on::after { content:""; position:absolute; left:8px; right:8px; bottom:-1px; height:2px;
+                   background:var(--accent); border-radius:2px; }
+  .pane { flex:1; min-height:0; overflow:auto; padding:12px; display:flex; flex-direction:column; gap:15px; }
+  .pane section { display:flex; flex-direction:column; gap:7px; }
+  #toolHint { color:var(--muted); font-size:12px; line-height:1.45; }
+
+  aside#panel h3 { margin:0; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted);
+                   font-weight:600; display:flex; align-items:center; justify-content:space-between; gap:6px; }
+  aside#panel label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  aside#panel input[type=range] { flex:1; min-width:0; accent-color:var(--accent); height:24px; }
+  aside#panel input[type=color] { width:38px; height:26px; padding:0; border:1px solid var(--line); border-radius:4px; background:none; }
+  aside#panel input[type=number], aside#panel input[type=text], aside#panel select {
+    font:inherit; color:var(--fg); background:var(--field); border:1px solid var(--line);
+    border-radius:6px; padding:6px 7px; width:100%; min-width:0;
+  }
+  aside#panel select { width:auto; flex:1; }
+  input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; flex:none; margin:0; }
+  .row { display:flex; gap:6px; }
+  #textBgRow { display:flex; flex-direction:column; gap:7px; }
+  .row > * { flex:1; }
+  output { color:var(--muted); width:28px; text-align:right; }
+  .note { color:var(--muted); font-size:11px; line-height:1.35; }
+  aside#panel input:disabled { opacity:.4; }
+
+  /* the annotations tier sits at the top of the Layers pane, above the image layers */
+  #annSec { border:1px solid var(--line); border-radius:9px; padding:9px; background:var(--tier); }
+  #annBody { display:flex; flex-direction:column; gap:7px; }
+  #annList { display:flex; flex-direction:row; flex-wrap:wrap; gap:4px; }
+  #layersToggle, #annToggle { min-height:22px; padding:1px 7px; font-size:10px; }
+
+  #exportFooter { margin-top:auto; border-top:1px solid var(--line); background:var(--tier); padding:10px 12px;
+                  display:flex; flex-direction:column; }
+  #exportFooter section { display:flex; flex-direction:column; gap:8px; }
+
+  #toast { position:fixed; left:50%; bottom:calc(22px + var(--safe-b)); transform:translateX(-50%);
+           background:#111; color:#fff; border:1px solid var(--line); padding:8px 14px; border-radius:8px;
+           opacity:0; transition:opacity .2s; pointer-events:none; z-index:60; max-width:90vw; text-align:center; }
+  #toast.show { opacity:.96; }
+
+  #sheetToggle { display:none; }
+  #backdrop { display:none; }
+
+  #layerList { display:flex; flex-direction:column; gap:3px; max-height:190px; overflow:auto; }
+  .layerRow { display:flex; align-items:center; gap:7px; padding:4px 6px; border:1px solid transparent;
+              border-radius:6px; cursor:pointer; font-size:12px; }
+  .layerRow:hover { background:#2c2d32; }
+  .layerRow.active { border-color:var(--accent); background:#2d2716; }
+  .layerRow.pinned { opacity:.65; cursor:default; }
+  .layerRow img { width:36px; height:27px; object-fit:contain; flex:none; border-radius:3px;
+                  background:repeating-conic-gradient(#2a2b2f 0% 25%, #26272b 0% 50%) 50%/8px 8px; }
+  .layerDot { width:8px; height:8px; border-radius:50%; background:var(--accent-hi); flex:none; margin:0 14px; }
+  .layerRow .lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #layerCount { color:var(--muted); font-size:11px; }
+  .annRow { display:flex; align-items:center; gap:5px; padding:3px 8px; border:1px solid var(--line);
+            border-radius:13px; cursor:pointer; font-size:11px; white-space:nowrap; flex:none;
+            background:var(--btn); touch-action:none; }
+  .annRow:hover { background:#34353b; }
+  .annRow.active { border-color:var(--accent); background:#2d2716; }
+  .annRow .sw { width:10px; height:10px; border-radius:50%; flex:none; border:1px solid #0008; }
+  .annRow .lbl { overflow:hidden; text-overflow:ellipsis; }
+
+  #dialog { position:fixed; inset:0; background:#000a; z-index:80; display:flex;
+            align-items:center; justify-content:center; padding:18px; }
+  #dialogBox { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px;
+               width:100%; max-width:340px; display:flex; flex-direction:column; gap:12px;
+               box-shadow:0 18px 50px #000b; }
+  #dialogBox h3 { margin:0; font-size:14px; }
+  #dialogBox label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  #dialogBox input, #dialogBox select { font:inherit; color:var(--fg); background:var(--field);
+               border:1px solid var(--line); border-radius:6px; padding:6px 7px; width:100%; min-width:0; }

@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#1b1c1f">
+<title>Easy Edit</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="favicon-16.png" sizes="16x16" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="stylesheet" href="mobile.css">
+</head>
+<body data-shell="mobile">
+
+<header id="topbar">
+  <span id="brand"><img src="favicon.svg" alt="" width="22" height="22"><span>Easy Edit</span></span>
+  <div class="group" id="actions">
+    <button id="undoBtn" disabled>Undo</button>
+    <button id="redoBtn" disabled>Redo</button>
+  </div>
+  <span class="spacer"></span>
+  <button id="newBtn">New</button>
+  <button id="openBtn" class="primary">Open</button>
+  <button id="sheetToggle" class="primary">Controls</button>
+  <a id="deskLink" href="/?desktop=1" title="Desktop version" aria-label="Desktop version"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></a>
+  <input type="file" id="file" accept="image/*" hidden>
+</header>
+
+<main>
+<div id="stage">
+    <canvas id="view" draggable="false"></canvas>
+    <canvas id="chrome" aria-hidden="true"></canvas>
+    <div id="zoomHud" hidden>
+      <button id="zoomOut" title="Zoom out (-)">−</button>
+      <button id="zoomPct" title="Actual size (100%)">100%</button>
+      <button id="zoomIn" title="Zoom in (+)">+</button>
+      <button id="zoomFit" title="Fit to window (0)">Fit</button>
+    </div>
+    <div id="hint">Tap <b>Open</b> to choose a photo</div>
+    <div id="selbar" hidden>
+      <button id="selEdit">Edit</button>
+      <button id="selDup">Duplicate</button>
+      <button id="selDel" class="danger">Delete</button>
+    </div>
+  </div>
+</main>
+
+<div id="dock">
+  <div class="group" id="tools"></div>
+  <div class="group" id="annTools"></div>
+</div>
+
+<aside id="panel">
+    <div id="tabs">
+      <button class="tab on" data-tab="tool">Tool</button>
+      <button class="tab" data-tab="layers">Layers</button>
+      <button class="tab" data-tab="image">Image</button>
+    </div>
+
+    <div class="pane" id="paneTool">
+      <div id="toolHint">Pick a drawing or effect tool to see its options here.</div>
+
+      <section id="styleSec">
+        <h3>Style</h3>
+        <label id="colorRow">Color <input type="color" id="color" value="#ff3b30"></label>
+        <label id="widthRow">Width <input type="range" id="width" min="1" max="80" value="6"><output id="widthOut">6</output></label>
+        <label id="opacityRow">Opacity <input type="range" id="opacity" min="0.05" max="1" step="0.05" value="1"><output id="opacityOut">1</output></label>
+        <label id="fillRow">Fill <input type="checkbox" id="filled"></label>
+        <div id="fontRow">
+          <label>Font <select id="fontFamily"></select></label>
+          <label>Size
+            <input type="range" id="fontSize" min="8" max="1200" value="48">
+            <output id="fontSizeOut">48</output>
+          </label>
+          <label>Exact <input type="number" id="fontSizeNum" min="1" max="6000" value="48"></label>
+          <div class="row">
+            <button id="boldBtn" title="Bold">Bold</button>
+            <button id="italicBtn" title="Italic">Italic</button>
+          </div>
+          <div id="textBgRow">
+            <label>Background <input type="checkbox" id="textBgOn"></label>
+            <label>BG color <input type="color" id="textBgColor" value="#000000"></label>
+            <label>BG opacity <input type="range" id="textBgOpacity" min="0" max="1" step="0.05" value="0.8"><output id="textBgOpacityOut">0.8</output></label>
+            <label>Padding <input type="range" id="textPad" min="0" max="80" value="14"><output id="textPadOut">14</output></label>
+            <label>Corners <input type="range" id="textRadius" min="0" max="60" value="10"><output id="textRadiusOut">10</output></label>
+          </div>
+        </div>
+      </section>
+
+      <section id="wandSec" hidden>
+        <h3>Magic wand</h3>
+        <label>All similar <input type="checkbox" id="wandGlobal"></label>
+        <label>Transparent <input type="checkbox" id="wandTransparent" checked></label>
+        <label id="wandColorRow">Color <input type="color" id="wandColor" value="#ff3b30"></label>
+        <label>Tolerance <input type="range" id="tolerance" min="0" max="100" value="22"><output id="toleranceOut">22</output></label>
+        <div class="note">Tap an area to replace it. Transparent clears it to see-through; untick to fill it with the Color here. Raise tolerance to match more shades at once.</div>
+      </section>
+
+      <section id="cropSec" hidden>
+        <h3>Crop</h3>
+        <div class="row">
+          <button id="applyCropBtn" class="primary">Apply</button>
+          <button id="cancelCropBtn">Cancel</button>
+        </div>
+        <div class="note">Drag the handles to resize, drag inside to move.</div>
+      </section>
+
+      <section id="blobSec" hidden>
+        <h3>Blob &amp; fry</h3>
+        <label>Size <input type="range" id="blobSize" min="20" max="800" value="160"><output id="blobSizeOut">160</output></label>
+        <label>Force <input type="range" id="blobStrength" min="-90" max="90" value="60"></label>
+        <button id="blobClear">Clear distort blobs</button>
+        <div class="note">Tap to add a blob, drag it to move. Blobs bulge the picture <b>before</b> frying, and are applied to what frying targets (the selected layer, or the background). UI only, never drawn into the image.</div>
+        <label>Fry <select id="fryLevel">
+          <option value="light">Light</option>
+          <option value="medium">Medium</option>
+          <option value="deep" selected>Deep fried</option>
+          <option value="nuked">Nuked</option>
+        </select></label>
+        <button id="fryBtn">Deep fry</button>
+      </section>
+    </div>
+
+    <div class="pane" id="paneLayers" hidden>
+      <section id="annSec">
+        <h3>Annotations <button id="annToggle" title="Hide / show">Hide</button></h3>
+        <div id="annBody">
+          <div id="annList"></div>
+          <label>Flatten into background <input type="checkbox" id="annFlatten"></label>
+          <div class="row"><button id="annDel" class="danger" disabled>Delete</button></div>
+          <div class="note">Left to right is back to front (rightmost draws on top). Drag a chip to restack it. Ctrl-click toggles one, Shift-click picks a range — same as on the canvas.</div>
+        </div>
+      </section>
+
+      <section id="layersSec">
+        <h3>Layers <button id="layersToggle" title="Hide / show">Hide</button></h3>
+        <div id="layersBody">
+          <div id="layerList"></div>
+          <div id="layerCount">No layers yet</div>
+          <div class="row">
+            <button id="layFront">Front</button>
+            <button id="layUp">Up</button>
+            <button id="layDown">Down</button>
+            <button id="layBack">Back</button>
+          </div>
+          <div class="row">
+            <button id="layRotL">Rot L</button>
+            <button id="layRotR">Rot R</button>
+            <button id="layDel" class="danger">Delete</button>
+          </div>
+          <button id="layFlatten">Flatten ticked into background</button>
+          <div class="note">Ticked rows are drawn into the background in their current order (undo reverts it). Ctrl/Shift-click rows to select several, then drag them together in the canvas.</div>
+        </div>
+      </section>
+
+      <section id="selSec">
+        <h3>Selection</h3>
+        <div class="row">
+          <button id="selAllBtn">Select all</button>
+          <button id="selClearBtn">Clear</button>
+        </div>
+        <div class="note" id="selInfo">Whole image</div>
+      </section>
+    </div>
+
+    <div class="pane" id="paneImage" hidden>
+      <div class="group" id="transform">
+        <button id="rotL">Rot L</button>
+        <button id="rotR">Rot R</button>
+        <button id="flipH">Flip H</button>
+        <button id="flipV">Flip V</button>
+      </div>
+            <section id="adjSec">
+        <h3>Adjust</h3>
+        <label>Bright <input type="range" id="brightness" min="0" max="200" value="100"></label>
+        <label>Contrast <input type="range" id="contrast" min="0" max="200" value="100"></label>
+        <label>Sat <input type="range" id="saturate" min="0" max="200" value="100"></label>
+        <label>Gray <input type="range" id="grayscale" min="0" max="100" value="0"></label>
+        <label>Sepia <input type="range" id="sepia" min="0" max="100" value="0"></label>
+        <div class="row">
+          <button id="applyAdj">Apply</button>
+          <button id="resetAdj">Reset</button>
+        </div>
+        <div class="note">Affects the final image, or just the selection if you have one. Apply bakes it in as its own layer.</div>
+      </section>
+
+      <section id="fxSec">
+        <h3>Effects</h3>
+        <label>Pixelate <input type="range" id="fxPixel" min="3" max="60" value="14"><output id="fxPixelOut">14</output></label>
+        <button id="fxPixelBtn">Pixelate</button>
+        <label>Blur <input type="range" id="fxBlur" min="1" max="30" value="8"><output id="fxBlurOut">8</output></label>
+        <button id="fxBlurBtn">Blur</button>
+        <div class="note">Works on what you see: the selection is flattened and the effect applied to it, then kept as its own layer. No selection = the whole picture. Ctrl+A selects all.</div>
+      </section>
+
+      <section id="bgSec">
+        <h3>Remove background</h3>
+        <button id="bgBtn">Remove BG (server)</button>
+        <div class="note">Applies to the selected layer, or the background. Uses your rembg container; the Wand does it instantly on-device.</div>
+      </section>
+
+      <section id="sizeSec">
+        <h3>Resize</h3>
+        <label>Lock ratio <input type="checkbox" id="lockRatio" checked></label>
+        <div class="row">
+          <input type="number" id="rw" placeholder="width" min="1">
+          <input type="number" id="rh" placeholder="height" min="1">
+        </div>
+        <button id="applyResize">Resize</button>
+        <div class="note">Locked: the other side follows as you type. Unlocked: distort freely - every layer, annotation and text scales with it.</div>
+      </section>
+    </div>
+
+    <div id="exportFooter">
+      <section id="outSec">
+        <h3>Export</h3>
+        <label>Format
+          <select id="fmt">
+            <option value="image/png">PNG</option>
+            <option value="image/jpeg">JPEG</option>
+            <option value="image/webp">WebP</option>
+          </select>
+        </label>
+        <label id="qRow">Quality <input type="range" id="quality" min="0.1" max="1" step="0.05" value="0.92"></label>
+        <label>Name <input type="text" id="fname" value="image"></label>
+        <div class="row">
+          <button id="copyBtn" class="primary">Copy</button>
+          <button id="dlBtn" class="primary">Download</button>
+        </div>
+      </section>
+    </div>
+  </aside>
+
+<div id="dialog" hidden>
+  <div id="dialogBox">
+    <h3>New canvas</h3>
+    <div class="row">
+      <label>Width <input type="number" id="newW" value="1200" min="1"></label>
+      <label>Height <input type="number" id="newH" value="1200" min="1"></label>
+    </div>
+    <label>Background
+      <select id="newBg">
+        <option value="#ffffff">White</option>
+        <option value="#000000">Black</option>
+        <option value="transparent">Transparent</option>
+      </select>
+    </label>
+    <div class="row">
+      <button id="newCreate" class="primary">Create canvas</button>
+      <button id="newClearBtn" class="danger">Clear all</button>
+    </div>
+    <button id="newCancel">Cancel</button>
+  </div>
+</div>
+
+<div id="backdrop"></div>
+<div id="toast"></div>
+
+<script>
+  // Publish the dock's height so the sheet, backdrop and toast can sit above it.
+  (function () {
+    var dock = document.getElementById('dock'), root = document.documentElement;
+    function measure() { root.style.setProperty('--dock-h', dock.offsetHeight + 'px'); }
+    if (window.ResizeObserver) new ResizeObserver(measure).observe(dock);
+    window.addEventListener('resize', measure);
+    measure();
+  })();
+</script>
+<script src="app.js"></script>
+</body>
+</html>

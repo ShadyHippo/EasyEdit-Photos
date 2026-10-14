@@ -742,57 +742,8 @@ async function main() {
   await shot("/tmp/m_4_bg.png");
   await evaluate(`undo()`); await sleep(200);
 
-  // ---- 10. mobile layout ----
-  await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
-  await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-  await sleep(600);
-  const mob = await evaluate(`({panelPos:getComputedStyle(document.querySelector('#panel')).position,
-     toggle:getComputedStyle(document.querySelector('#sheetToggle')).display,
-     open:document.querySelector('#panel').classList.contains('open'),
-     toolsScroll:document.querySelector('#tools').scrollWidth > document.querySelector('#tools').clientWidth,
-     btnH:document.querySelector('#undoBtn').getBoundingClientRect().height})`);
-  check("mobile: panel becomes a bottom sheet", mob.panelPos === "fixed", mob.panelPos);
-  check("mobile: Controls toggle is visible", mob.toggle !== "none", mob.toggle);
-  check("mobile: sheet starts closed", mob.open === false);
-  check("mobile: tool strip scrolls horizontally", mob.toolsScroll === true);
-  check("mobile: touch targets >= 40px", mob.btnH >= 40, { buttonHeight: mob.btnH });
-
-  await evaluate(`document.querySelector('#sheetToggle').click()`); await sleep(400);
-  check("mobile: Controls opens the sheet", (await evaluate(`document.querySelector('#panel').classList.contains('open')`)) === true);
-  await shot("/tmp/m_5_mobile_sheet.png");
-  await evaluate(`document.querySelector('#backdrop').click()`); await sleep(400);
-  check("mobile: backdrop closes the sheet", (await evaluate(`document.querySelector('#panel').classList.contains('open')`)) === false);
-
-  // regression: after the viewport shrank, a fitted view must be re-centred (not left at the
-  // desktop pan), otherwise it overflows the stage and canvas coordinates land off-screen.
-  const mrect = await rectOf();
-  const mstage = await evaluate(`stage.getBoundingClientRect().toJSON()`);
-  check("mobile: a fitted view is re-centred inside the stage",
-    mrect.left >= mstage.left - 1 && mrect.right <= mstage.right + 1 &&
-    mrect.top >= mstage.top - 1 && mrect.bottom <= mstage.bottom + 1, { view: mrect, stage: mstage });
-
-  await evaluate(`document.querySelector('[data-tool=brush]').click()`);
-  const rm = await rectOf();
-  await snapshot();
-  await touchDrag(rm.left + rm.width * 0.25, rm.top + rm.height * 0.25, rm.left + rm.width * 0.7, rm.top + rm.height * 0.6);
-  const touchDiff = await diffFrom();
-  check("mobile: touch drag draws", touchDiff > 300, { changed: touchDiff });
-  await shot("/tmp/m_6_mobile_draw.png");
-  await evaluate(`undo()`); await sleep(200);
-
-  await evaluate(`document.querySelector('[data-tool=crop]').click()`);
-  await touchDrag(rm.left + rm.width * 0.25, rm.top + rm.height * 0.25, rm.left + rm.width * 0.6, rm.top + rm.height * 0.6);
-  const cm = await evaluate(`({...crop})`);
-  check("mobile: touch creates crop selection", cm.w > 50 && cm.h > 50, cm);
-  const seM = await handlePos("se");
-  await touchDrag(seM.x, seM.y, seM.x + 50, seM.y + 40);
-  const cm2 = await evaluate(`({...crop})`);
-  check("mobile: touch drags a crop handle", cm2.w > cm.w + 20, { before: cm.w, after: cm2.w });
-  await evaluate(`cancelCrop()`);
-
-  await send("Emulation.clearDeviceMetricsOverride");
-  await send("Emulation.setTouchEmulationEnabled", { enabled: false });
-  await sleep(300);
+  // Mobile layout + touch gestures are covered by tests/mobile.ts, which drives the dedicated
+  // mobile.html shell (a phone never sees index.html — see the redirect in its <head>).
 
   // ---- 11. export / copy regression ----
   try { await Deno.remove("/tmp/dl", { recursive: true }); } catch {}

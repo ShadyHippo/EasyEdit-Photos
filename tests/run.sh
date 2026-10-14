@@ -57,8 +57,18 @@ if [ "$UP" != 1 ]; then
   kill $CPID $SPID 2>/dev/null; exit 3
 fi
 
-deno run -A "${1:-$HERE/e2e.ts}"
-RC=$?
+if [ -n "${1:-}" ]; then
+  deno run -A "$1"
+  RC=$?
+else
+  deno run -A "$HERE/e2e.ts"
+  RC=$?
+  if [ "$RC" -eq 0 ]; then
+    echo
+    deno run -A "$HERE/mobile.ts"
+    RC=$?
+  fi
+fi
 
 kill $CPID $SPID 2>/dev/null
 pkill -f "remote-debugging-port=$PORT" 2>/dev/null

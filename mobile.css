@@ -1,0 +1,111 @@
+/* ============================================================================
+ * Easy Edit — phone shell.
+ *
+ * This stylesheet *imports the desktop stylesheet* and then overrides the frame:
+ * every component (buttons, panels, sliders, layer rows, dialogs…) is shared, so
+ * the two shells can never drift. Only the layout differs:
+ *
+ *   index.html   header on top, 280px sidebar on the right
+ *   mobile.html  thin topbar, canvas, tool dock at the bottom, settings in a
+ *                sheet that slides up *above* the dock (so the tools stay usable)
+ * ========================================================================== */
+@import url("desktop.css");
+
+/* ---------------------------------------------------------------- the frame */
+/* A phone must never scroll the page: iOS treats 100vh as the *large* viewport,
+   so an overflow:hidden body still rubber-bands. Pin the frame instead. */
+html, body { height:100%; overflow:hidden; }
+body {
+  position:fixed; inset:0; height:auto;
+  display:flex; flex-direction:column;
+  touch-action:none;                     /* no page scroll from anywhere; opt back in below */
+  overscroll-behavior:none;
+}
+
+/* ------------------------------------------------------------------- topbar */
+#topbar {
+  flex:none; display:flex; align-items:center; gap:6px;
+  padding:calc(6px + var(--safe-t)) 8px 6px;
+  background:var(--panel); border-bottom:1px solid var(--line);
+}
+#brand { padding:0 4px 0 2px; }
+#brand span { display:none; }
+#topbar .spacer { flex:1; }
+
+/* Header buttons go icon-only with proper touch targets. */
+button { min-height:44px; padding:9px 10px; }
+.tl, .k { display:none; }
+.ai { display:inline-flex; }
+#topbar button svg { width:18px; height:18px; }
+#sheetToggle { display:inline-flex; }
+#deskLink {
+  display:inline-flex; align-items:center; justify-content:center; flex:none;
+  width:44px; height:44px; border-radius:6px; color:var(--muted);
+  background:var(--btn); border:1px solid var(--line); text-decoration:none;
+}
+#deskLink svg { width:18px; height:18px; }
+#deskLink:active { background:#34353b; }
+
+/* --------------------------------------------------------------- tool dock */
+/* Tools live at the bottom, under the thumb. Annotations are the lower row,
+   which is the closest thing to a thumb there is. */
+#dock {
+  flex:none; display:flex; flex-direction:column; gap:5px;
+  padding:7px 8px calc(7px + var(--safe-b));
+  background:var(--panel); border-top:1px solid var(--line);
+}
+#tools, #annTools {
+  display:flex; gap:4px; flex-wrap:nowrap; overflow-x:auto;
+  -webkit-overflow-scrolling:touch; scrollbar-width:none; touch-action:pan-x;
+}
+#tools::-webkit-scrollbar, #annTools::-webkit-scrollbar { display:none; }
+#tools button, #annTools button { flex:0 0 auto; min-width:46px; justify-content:center; padding:9px 6px; }
+#tools button svg, #annTools button svg { width:20px; height:20px; margin:0; }
+
+/* ----------------------------------------------------------------- the sheet */
+/* Sits above the dock, so you can change settings without losing the tools. */
+aside#panel {
+  position:fixed; left:0; right:0; top:auto; width:auto; height:auto;
+  bottom:var(--dock-h, 0px);
+  max-height:calc(100% - var(--dock-h, 0px) - 64px);
+  border-left:none; border-top:1px solid var(--line);
+  border-radius:16px 16px 0 0; z-index:40; padding:0;
+  transform:translateY(calc(100% + var(--dock-h, 0px) + 12px));
+  transition:transform .22s ease;
+  box-shadow:0 -10px 30px #0009;
+  touch-action:pan-y;                    /* the sheet is the one thing that scrolls */
+}
+aside#panel.open { transform:translateY(0); }
+#tabs { padding:10px 10px 0; }
+.tab { padding:12px 12px; font-size:11px; }
+.pane { padding:12px 14px calc(16px + var(--safe-b)); }
+
+#backdrop {
+  display:block; position:fixed; left:0; right:0; top:0;
+  bottom:var(--dock-h, 0px);             /* never dim the dock — it stays usable */
+  background:#0008; z-index:35; opacity:0; pointer-events:none; transition:opacity .22s;
+}
+#backdrop.show { opacity:1; pointer-events:auto; }
+
+/* ---------------------------------------------- thumb-sized sheet controls */
+aside#panel input[type=range] { height:36px; }
+input[type=checkbox] { width:22px; height:22px; }
+aside#panel input[type=number], aside#panel input[type=text], aside#panel select {
+  font-size:16px; padding:10px 9px;         /* 16px stops iOS zooming on focus */
+}
+#dialogBox input, #dialogBox select { font-size:16px; }
+aside#panel label { min-height:36px; }
+.layerRow { padding:9px 8px; }
+.annRow { padding:7px 11px; font-size:12px; }
+#annToggle, #layersToggle { min-height:32px; padding:4px 11px; font-size:11px; }
+/* The desktop explainer paragraphs eat the sheet alive on a phone. */
+aside#panel .note { display:none; }
+#exportFooter { padding:10px 14px calc(10px + var(--safe-b)); }
+#exportFooter #outSec { display:grid; grid-template-columns:1fr 1fr; gap:8px; align-items:center; }
+#exportFooter #outSec > h3, #exportFooter #outSec > .row { grid-column:1 / -1; }
+
+/* --------------------------------------------------------- canvas furniture */
+#zoomHud button { min-height:40px; padding:8px 12px; font-size:13px; }
+#selbar button { min-height:44px; padding:9px 13px; }
+#toast { bottom:calc(var(--dock-h, 0px) + 64px + var(--safe-b)); }
+#hint { font-size:15px; }
