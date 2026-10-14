@@ -1,13 +1,20 @@
+# Default stack: the published editor image + the rembg background-removal sidecar.
+#
+#   docker compose up -d                    # editor on :3100, rembg reachable only on the network
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d   # live-edit from disk
+#
+# Both services join the same `easyedit` network, so nginx reaches rembg by its *service name*
+# (http://rembg:7000 — see nginx.conf) rather than a host port. That is the whole trick: the
+# two containers talk container-to-container and there is no host-networking or CORS in the way.
 services:
   editor:
-    image: nginx:alpine
+    image: ghcr.io/shadyhippo/easyedit-photos:latest
     container_name: easyedit
     restart: unless-stopped
     ports:
       - "3100:80"          # the editor UI
-    volumes:
-      - ./:/usr/share/nginx/html:ro
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - rembg
     networks:
       - easyedit
 
@@ -20,7 +27,7 @@ services:
     environment:
       - U2NET_HOME=/models      # keep downloaded models on a volume
     ports:
-      - "3101:7000"             # direct API access (optional, but handy)
+      - "3101:7000"             # direct API access (optional, handy for debugging)
     volumes:
       - rembg-models:/models
     networks:

@@ -1,0 +1,14 @@
+# Nothing here belongs in the runtime image — keep the build context small.
+.git
+.github
+.gitignore
+tests
+docker-compose*.yml
+Dockerfile
+.dockerignore
+*.md
+*.log
+__pycache__
+*.pyc
+.DS_Store
+Thumbs.db
