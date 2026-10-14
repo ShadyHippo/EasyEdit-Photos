@@ -765,7 +765,8 @@ async function main() {
   check("bg server round-trip succeeds", /Background removed/.test(bgToast), bgToast);
   check("bg result replaces canvas", bgState.w === 200 && bgState.h === 150, bgState);
   check("bg result preserves transparency", bgAlpha === 0, { alphaAtLeft: bgAlpha });
-  check("bg request used multipart field 'file'", stats.ok >= 1 && stats.bad === 0, stats);
+  check("bg request used the multipart fields 'file' and 'model'", stats.ok >= 1 && stats.bad === 0, stats);
+  check("bg request asked for the u2net model", stats.model === "u2net", stats.model);
 
   // with a layer selected it should target that layer instead of the background
   await evaluate(`(async()=>{const b=Uint8Array.from(atob(window.__png),c=>c.charCodeAt(0));

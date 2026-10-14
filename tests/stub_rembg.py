@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Minimal stand-in for rembg's `rembg s` server, just for testing the editor wiring.
-Mirrors the real API: POST /api/remove, multipart field `file`, returns image/png, CORS *.
-Returns 400 if the field is not named `file` (so a passing client proves the field name)."""
-import http.server, socketserver, struct, zlib, sys
+
+Mirrors the real API: POST /api/remove, multipart fields `file` and `model`, returns image/png,
+CORS *. Returns 400 if either field is missing — so a passing client proves the field names —
+and records the requested model so a test can assert which one the app asked for.
+"""
+import http.server, re, socketserver, struct, zlib, sys
 
 def chunk(t, d):
     return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
@@ -22,7 +25,27 @@ def png_rgba(w, h):
             + chunk(b'IEND', b''))
 
 BODY = png_rgba(200, 150)
-STATE = {"ok": 0, "bad": 0}
+STATE = {"ok": 0, "bad": 0, "model": None}
+
+def multipart(body, content_type):
+    """Minimal multipart/form-data parser: {field name -> raw value}.
+
+    Parses the part *headers* rather than substring-matching the whole body, so an uploaded
+    file whose contents happen to contain `name="model"` cannot fool the field check.
+    """
+    m = re.search(r'boundary=([^;]+)', content_type or '')
+    if not m:
+        return {}
+    boundary = ('--' + m.group(1)).encode()
+    fields = {}
+    for part in body.split(boundary)[1:]:
+        if part[:2] == b'--':
+            break                                     # closing delimiter
+        head, _, value = part.partition(b'\r\n\r\n')
+        name = re.search(rb'name="([^"]+)"', head)
+        if name:
+            fields[name.group(1).decode()] = value.rstrip(b'\r\n')
+    return fields
 
 class H(http.server.BaseHTTPRequestHandler):
     def _cors(self):
@@ -33,7 +56,9 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(204); self._cors(); self.end_headers()
     def do_GET(self):
         if self.path == '/stats':
-            b = ('{"ok":%d,"bad":%d}' % (STATE["ok"], STATE["bad"])).encode()
+            b = ('{"ok":%d,"bad":%d,"model":%s}' % (
+                STATE["ok"], STATE["bad"],
+                '"%s"' % STATE["model"] if STATE["model"] else 'null')).encode()
             self.send_response(200); self._cors()
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b); return
@@ -41,9 +66,11 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(n) if n else b''
-        if self.path != '/api/remove' or b'name="file"' not in body:
+        fields = multipart(body, self.headers.get('Content-Type'))
+        if self.path != '/api/remove' or 'file' not in fields or 'model' not in fields:
             STATE["bad"] += 1
             self.send_response(400); self._cors(); self.end_headers(); return
+        STATE["model"] = fields["model"].decode('utf-8', 'replace')
         STATE["ok"] += 1
         self.send_response(200); self._cors()
         self.send_header('Content-Type', 'image/png')

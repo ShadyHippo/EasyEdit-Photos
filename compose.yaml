@@ -55,9 +55,10 @@ services:
       - ALL
 
 networks:
-  # Created on demand if it does not exist. Attach your reverse proxy to it
-  # (e.g. `docker network connect proxynet swag`) and it can reach the editor by name.
+  # Owned by your reverse proxy (SWAG creates it), so Compose must not create or remove it.
+  # Create it before the first `up`:   docker network create proxynet
+  # Then attach the proxy:             docker network connect proxynet swag
   proxynet:
-    name: proxynet
+    external: true
   easyedit:
     name: easyedit

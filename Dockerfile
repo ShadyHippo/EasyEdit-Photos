@@ -2,7 +2,7 @@
 # plus a copy of the site and the server block that proxies /bg/ to the rembg sidecar.
 #
 # Build:  docker build -t ghcr.io/shadyhippo/easyedit-photos:latest .
-# Run:    docker compose up -d          (see docker-compose.yml)
+# Run:    docker compose up -d          (see compose.yaml)
 FROM nginx:alpine
 
 LABEL org.opencontainers.image.title="EasyEdit" \

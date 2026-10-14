@@ -11,6 +11,7 @@
 #   gh auth refresh -s write:packages
 #   gh auth token | docker login ghcr.io -u "$(gh api user -q .login)" --password-stdin
 # ...or export GHCR_TOKEN=<a PAT with write:packages> and this script logs in for you.
+# If that token belongs to a different account than the repo owner, also set GHCR_USER.
 #
 # Afterwards `docker login` is remembered, so plain `scripts/publish.sh` is enough.
 set -euo pipefail
@@ -54,8 +55,11 @@ echo "tags   ${tags[*]}"
 echo
 
 if [ -n "${GHCR_TOKEN:-}" ]; then
-  printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$owner" --password-stdin >/dev/null
-  echo "logged in as $owner (GHCR_TOKEN)"
+  # The username must match the token's owner, which is normally the repo owner; GHCR_USER
+  # overrides it for the case where the token belongs to a different account.
+  login_user="${GHCR_USER:-$owner}"
+  printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$login_user" --password-stdin >/dev/null
+  echo "logged in as $login_user (GHCR_TOKEN)"
 fi
 
 docker build "${build_args[@]}" .

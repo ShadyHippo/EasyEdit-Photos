@@ -2130,8 +2130,10 @@ async function deepfry(level) {
 }
 
 /* ------------------------------------------------------------------ 15  bg */
-// Same-origin path nginx proxies to the rembg container. Opened as a bare file there is no
-// proxy, so fall back to the sidecar's published port. The endpoint is never shown to the user.
+// Same-origin path nginx proxies to the rembg container. Opened as a bare file:// there is no
+// nginx to proxy anything, so fall back to the sidecar's port directly — which only works if you
+// publish it (compose.yaml leaves rembg unpublished; add `ports: ["3101:7000"]` for file:// use).
+// The endpoint is never shown to the user.
 let bgEndpoint = location.protocol.startsWith('http') ? '/bg/api/remove' : 'http://localhost:3101/api/remove';
 let bgProbeUrl = location.protocol.startsWith('http') ? '/bg/' : 'http://localhost:3101/';
 // Which rembg model to ask for. 'u2net' is Apache-2.0 and ~11x lighter in RAM (~840 MiB vs
