@@ -13,3 +13,7 @@ __pycache__/
 Thumbs.db
 *~
 *.swp
+
+# Local compose config + the rembg model cache (see compose.yaml)
+.env
+rembg-models/

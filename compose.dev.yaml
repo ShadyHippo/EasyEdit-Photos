@@ -1,0 +1,13 @@
+# Dev override: serve the working tree straight off disk instead of the built image, so an
+# edit shows up on refresh with no rebuild. Same networks and rembg as the default stack.
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d
+#
+# (Deliberately not named compose.override.yaml — that would silently apply to the default
+# `docker compose up` too.)
+services:
+  editor:
+    image: nginx:alpine
+    volumes:
+      - ./:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro

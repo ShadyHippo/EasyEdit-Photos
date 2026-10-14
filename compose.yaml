@@ -1,0 +1,63 @@
+# EasyEdit — the editor plus its background-removal sidecar.
+#
+#   docker compose up -d
+#
+# Both services share the `easyedit` network, so the editor's nginx reaches rembg by
+# service name (http://rembg:7000 — see nginx.conf) with no host ports or CORS involved.
+#
+# Nothing is published to the host by default: put it behind a reverse proxy and point
+# that at `easyedit:80` (for SWAG: `docker network connect proxynet swag`, then proxy to
+# `easyedit:80`).
+#
+# Live-edit from the working tree instead of the built image:
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d
+services:
+  editor:
+    image: ghcr.io/shadyhippo/easyedit-photos:latest
+    container_name: easyedit
+    restart: unless-stopped
+    # Uncomment for direct access at http://<host>:3100. Note the container port is 80,
+    # not 3100 — and the app has no authentication, so keep this to a trusted LAN.
+    # ports:
+    #   - "3100:80"
+    networks:
+      - proxynet     # a reverse proxy on this network reaches it as "easyedit"
+      - easyedit     # and it reaches rembg here as "rembg"
+
+  rembg:
+    image: danielgatis/rembg:latest
+    container_name: easyedit-rembg
+    restart: unless-stopped
+    # image entrypoint is `rembg`, so this runs: rembg s --host 0.0.0.0 --port 7000 --log_level info
+    # --no-ui drops the Gradio UI (less idle CPU, and one less thing exposed if you publish this).
+    command: s --host 0.0.0.0 --port 7000 --log_level info --no-ui
+    environment:
+      - U2NET_HOME=/models
+    volumes:
+      # A bind mount, deliberately not a named volume. Point U2NET_DIR at a fast or roomy disk
+      # by putting `U2NET_DIR=/some/path` in a .env file next to this one. Defaults to
+      # ./rembg-models, which then holds models/u2net (176 MB) and/or models/bria-rmbg (1 GB).
+      - ${U2NET_DIR:-./rembg-models}:/models
+    networks:
+      - easyedit     # private: rembg is never on the proxy network
+    # This is the one container that parses untrusted input (arbitrary images through
+    # Pillow/onnxruntime), and its memory use is model-dependent and large — bria-rmbg sat at
+    # 9.15 GiB resident after a single request, u2net at ~1.1 GiB. Without a limit a few
+    # concurrent requests can OOM the whole host, so cap it and let only this container die.
+    # (If you switch BG_MODEL in app.js back to bria-rmbg, raise this to ~10g or it OOM-loops.)
+    mem_limit: 3g
+    memswap_limit: 3g
+    cpus: 2.0
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+networks:
+  # Created on demand if it does not exist. Attach your reverse proxy to it
+  # (e.g. `docker network connect proxynet swag`) and it can reach the editor by name.
+  proxynet:
+    name: proxynet
+  easyedit:
+    name: easyedit

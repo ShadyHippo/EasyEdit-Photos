@@ -2134,6 +2134,10 @@ async function deepfry(level) {
 // proxy, so fall back to the sidecar's published port. The endpoint is never shown to the user.
 let bgEndpoint = location.protocol.startsWith('http') ? '/bg/api/remove' : 'http://localhost:3101/api/remove';
 let bgProbeUrl = location.protocol.startsWith('http') ? '/bg/' : 'http://localhost:3101/';
+// Which rembg model to ask for. 'u2net' is Apache-2.0 and ~11x lighter in RAM (~840 MiB vs
+// ~9.15 GiB resident) and ~8x faster on the first call. 'bria-rmbg' is the server's default
+// and is a little better on hair and fur, but it is non-commercial-use-only and needs ~10 GB.
+const BG_MODEL = 'u2net';
 // The sidecar is optional: nginx replies 502/503/504 when the rembg upstream is down, so only
 // reveal the section when it actually answers. Re-checked whenever the Image tab is opened.
 async function syncBgSection() {
@@ -2155,6 +2159,7 @@ async function removeBgServer() {
     const blob = await new Promise(r => src.toBlob(r, 'image/png'));
     const fd = new FormData();
     fd.append('file', blob, 'image.png');
+    fd.append('model', BG_MODEL);
     const res = await fetch(bgEndpoint, { method:'POST', body:fd });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const out = await res.blob();
@@ -2698,3 +2703,11 @@ updateSelInfo();
 syncStyleButtons();
 // Only show the (optional) background-removal sidecar UI if it actually answers.
 syncBgSection();
+
+/* ------------------------------------------------------------- 20  pwa */
+// Installable, and fully usable offline once installed. Registered on https only: the local
+// dev server (plain http, or a LAN IP) must never end up with a caching service worker
+// sitting between you and your edits. sw.js does the caching; see the file for the strategy.
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
+}

@@ -115,6 +115,7 @@ async function main() {
      toolW:document.querySelector('#tools [data-tool]').getBoundingClientRect().width,
      scrollable:document.documentElement.scrollHeight > window.innerHeight + 1,
      deskLink:!!document.querySelector('#deskLink'), zoomHud:!!document.querySelector('#zoomHud'), tool:tool,
+     manifest:!!document.querySelector('link[rel=manifest]'),
      hint:document.querySelector('#hint').textContent.trim()})`);
   check("body advertises the mobile shell", shell.shell === "mobile", shell.shell);
   check("phone shell has a topbar and a dock, no desktop header",
@@ -126,6 +127,7 @@ async function main() {
   check("the empty hint is phone-appropriate", /choose a photo/i.test(shell.hint), shell.hint);
   check("the phone drops the desktop link and the zoom HUD", shell.deskLink === false && shell.zoomHud === false, shell);
   check("the phone opens on the Pen tool", shell.tool === "brush", shell.tool);
+  check("the mobile shell is installable too", shell.manifest === true, shell.manifest);
   await shot("/tmp/mo-1-empty.png");
 
   // ---- 3. sheet geometry ----

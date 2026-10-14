@@ -3,7 +3,11 @@
 .github
 .gitignore
 tests
+scripts
+compose*.yaml
 docker-compose*.yml
+.env
+rembg-models/
 Dockerfile
 .dockerignore
 *.md
