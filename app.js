@@ -8,7 +8,7 @@
  *    2  dom         cached element references
  *    3  state       every mutable module variable, in one place
  *    4  util        tiny pure helpers
- *    5  history     copy-on-write undo / redo (see the note below)
+ *    5  history     dirty-rect patch undo / redo (see the note below)
  *    6  model       layer + selection bookkeeping
  *    7  render      everything that paints the view canvas
  *    8  pointer     the active-tool state machine and pointer handling
@@ -26,12 +26,11 @@
  * ========================================================================== */
 
 /* -------------------------------------------------------------- 1  config */
-const MAX_UNDO = 12;
-// Retained pixel history is capped by bytes, not just by step count: one 4K
-// canvas is ~33 MB, so twelve untouched copies would be ~400 MB. Dropping whole
-// old steps once the budget is blown keeps this usable on modest hardware, and
-// it only ever costs history depth, never correctness.
-const MAX_HISTORY_BYTES = 384 << 20;
+// Undo depth is bounded by retained bytes rather than by a small step count, since
+// only a dirty rectangle is kept per edit (see §5). The step cap is a generous
+// backstop for histories that are cheap but very long (metadata-only edits).
+const MAX_UNDO = 200;
+const MAX_HISTORY_BYTES = 384 << 20;   // budget for bytes retained by history
 const HANDLE_PX = 26;            // crop / layer handle hit size, in screen px
 // One source of truth for "this is a phone": narrow, or short-and-wide (landscape). The CSS
 // media query mirrors this exact string.
@@ -168,6 +167,7 @@ let paintSeq = 0;                // bumped by the few in-place pixel writes so t
 let frameQueued = false;
 
 let undoStack = [], redoStack = [], gestureSnap = null;
+let trimPending = false;         // a pushUndo() op landed; trim once its surfaces are extra
 let nudgeTimer = null, toastTimer = null;
 
 /* ---------------------------------------------------------------- 4  util */
@@ -220,32 +220,88 @@ function toast(msg) {
 
 /* ------------------------------------------------------------- 5  history */
 /* A snapshot keeps *references* to the pixel canvases and copies only the small
- * metadata (layer rects, texts, blobs, selection). Before a canvas is edited in
- * place it is cloned if any snapshot still points at it (copy-on-write), and
- * released once nothing needs it. So one operation costs at most one canvas copy
- * — never a copy of the whole document — while undo still restores exact pixels.
+ * metadata (layer rects, texts, blobs, selection); the references are shared with
+ * neighbouring states, so a snapshot itself holds no pixels.
  *
- * `pinned` maps a canvas to the number of history entries holding it. Only four
- * places ever write into a canvas in place (two of them the overlay) and each
- * calls the matching own*() first; everything else builds a fresh canvas, which
- * is safe to hand to history as-is.
+ * Pixels are never copied wholesale. Every in-place write to a surface (the
+ * background, the overlay, a layer) is recorded as a *patch*: the rectangle that
+ * changed, plus its pixels before and after. A snapshot only remembers how many
+ * patches of each surface had been applied when it was taken; undo walks the
+ * patches backwards, redo forwards, both exactly. So one operation costs the
+ * rectangle it touched rather than a whole-canvas clone — a wand-sized edit is
+ * kilobytes where a 4K canvas copy is ~33 MB — while undo still restores exact
+ * pixels.
+ *
+ * The one rule: every in-place pixel write must be recorded. There are exactly two
+ * writers today — doWand (which knows its rectangle) and bakeTexts (which paints the
+ * overlay) — and both record a patch; a new one that writes a surface directly would
+ * silently corrupt older states, so route it through commitPatch()/withPatch() too.
  */
-const pinned = new Map();        // canvas -> reference count
-let pinnedBytes = 0;             // total bytes currently held by history
 const canvasBytes = c => c.width * c.height * 4;
+const logs = new Map();                // canvas -> { patches, dropped, applied }
+const patchBytesOf = p => p.w * p.h * 4 * 2;   // the before and after pixels
 
-function pin(c) {
-  const n = pinned.get(c) || 0;
-  if (!n) pinnedBytes += canvasBytes(c);
-  pinned.set(c, n + 1);
+function logOf(c) {
+  let l = logs.get(c);
+  if (!l) { l = { patches: [], dropped: 0, applied: 0 }; logs.set(c, l); }
+  return l;
 }
-function unpin(c) {
-  const n = pinned.get(c);
-  if (!n) return;
-  if (n === 1) { pinned.delete(c); pinnedBytes -= canvasBytes(c); }
-  else pinned.set(c, n - 1);
+const appliedOf = c => { const l = logs.get(c); return l ? l.applied : 0; };
+// putImageData overwrites (it ignores transforms, alpha and compositing), which is
+// exactly what restoring an exact rectangle needs.
+const blit = (c, img, x, y) => c.getContext('2d').putImageData(img, x, y);
+
+// Record one changed rectangle. `before`/`after` are ImageData of exactly that rect.
+function commitPatch(c, x, y, w, h, before, after) {
+  const log = logOf(c);
+  // A fresh edit invalidates any patches that were only reachable through redo.
+  if (log.dropped + log.patches.length > log.applied) log.patches.length = log.applied - log.dropped;
+  log.patches.push({ x, y, w, h, before, after });
+  log.applied++;
 }
-const frozen = c => pinned.has(c);
+// Run `draw` and record the rectangle it changed, found by diffing the surface. Used
+// by writers that cannot cheaply predict their box (painting text, whose glyphs can
+// overhang the measured line box). Writers that already know the rectangle (the wand)
+// call commitPatch() directly. `draw` must change only that surface.
+function withPatch(c, draw) {
+  const ctx = c.getContext('2d'), W = c.width, H = c.height;
+  const before = ctx.getImageData(0, 0, W, H);
+  draw();
+  const after = ctx.getImageData(0, 0, W, H);
+  const a = before.data, b = after.data;
+  let x0 = W, y0 = H, x1 = -1, y1 = -1;
+  for (let y = 0; y < H; y++) {
+    let i = y * W * 4;
+    for (let x = 0; x < W; x++, i += 4) {
+      if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2] || a[i + 3] !== b[i + 3]) {
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+  }
+  if (x1 < 0) return;                                // the draw changed nothing
+  const w = x1 - x0 + 1, h = y1 - y0 + 1;
+  commitPatch(c, x0, y0, w, h, cropImageData(before, x0, y0, w, h, W), cropImageData(after, x0, y0, w, h, W));
+}
+// Copy a sub-rectangle out of a full-surface ImageData.
+function cropImageData(src, x, y, w, h, srcW) {
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let row = 0; row < h; row++) {
+    const from = ((y + row) * srcW + x) * 4;
+    out.set(src.data.subarray(from, from + w * 4), row * w * 4);
+  }
+  return new ImageData(out, w, h);
+}
+// Bring a surface to the given absolute patch count, writing only the rectangles
+// that differ. Returns true when any pixel moved (so the render cache is invalidated).
+function syncSurface(c, target) {
+  const log = logOf(c);
+  if (target < log.dropped) target = log.dropped;  // older patches were compacted away
+  if (target === log.applied) return false;
+  let touched = false;
+  while (log.applied > target) { log.applied--; const p = log.patches[log.applied - log.dropped]; blit(c, p.before, p.x, p.y); touched = true; }
+  while (log.applied < target) { const p = log.patches[log.applied - log.dropped]; blit(c, p.after, p.x, p.y); log.applied++; touched = true; }
+  return touched;
+}
 
 function snapshot() {
   const ls = layers.map(l => ({ ...l }));
@@ -257,20 +313,67 @@ function snapshot() {
     blobs: blobs.map(b => ({ ...b })),
     sel: selText, selShape, selShapes: [...selShapes], selLayer, selLayers: [...selLayers],
   };
-  s.surfaces = [...new Set([base, overlay, ...ls.map(l => l.c)])];
-  s.surfaces.forEach(pin);
+  s.applied = new Map();
+  for (const c of [base, overlay, ...ls.map(l => l.c)]) s.applied.set(c, appliedOf(c));
   return s;
 }
 function drop(s) {
-  if (!s || !s.surfaces) return;
-  s.surfaces.forEach(unpin);
-  s.surfaces = null;
+  if (!s) return;
+  s.base = s.overlay = null; s.layers = null; s.texts = null; s.shapes = null; s.applied = null;
 }
 function dropStack(stack) { for (const s of stack) drop(s); stack.length = 0; }
+const allStates = () => [...undoStack, ...redoStack, gestureSnap].filter(Boolean);
+const liveSurfaces = () => new Set([base, overlay, ...layers.map(l => l.c)]);
+function stateSurfaces(set = new Set()) {
+  for (const s of allStates()) { if (!s) continue; if (s.base) { set.add(s.base); set.add(s.overlay); } if (s.layers) for (const l of s.layers) set.add(l.c); }
+  return set;
+}
+// Bytes history is holding: the patch logs, plus whole canvases that only a state
+// still references (structural states keep the surfaces they replaced alive).
+function historyBytes() {
+  let bytes = 0;
+  for (const log of logs.values()) for (const p of log.patches) bytes += patchBytesOf(p);
+  const live = liveSurfaces();
+  for (const c of stateSurfaces()) if (!live.has(c)) bytes += canvasBytes(c);
+  return bytes;
+}
+// Forget the logs of surfaces nothing can reach any more (a canvas a trimmed state
+// was the last holder of).
+function sweepLogs() {
+  const reach = stateSurfaces(liveSurfaces());
+  for (const c of [...logs.keys()]) if (!reach.has(c)) logs.delete(c);
+}
+// Drop patches below the lowest count any reachable state still needs: those pixels
+// are already baked into every surface that holds them.
+function compactLogs() {
+  const low = new Map(), high = new Map();
+  const note = (c, n) => {
+    const lo = low.get(c); if (lo === undefined || n < lo) low.set(c, n);
+    const hi = high.get(c); if (hi === undefined || n > hi) high.set(c, n);
+  };
+  for (const s of allStates()) if (s.applied) for (const [c, n] of s.applied) note(c, n);
+  for (const [c, log] of logs) note(c, log.applied);     // the live document is a state too
+  for (const [c, log] of logs) {
+    const lo = low.get(c), hi = high.get(c);
+    if (lo === undefined) { logs.delete(c); continue; }
+    if (lo > log.dropped) { log.patches.splice(0, lo - log.dropped); log.dropped = lo; }
+    const keep = hi - log.dropped;
+    if (log.patches.length > keep) log.patches.length = keep;
+  }
+}
 
 function trimHistory() {
+  sweepLogs();
   while (undoStack.length > MAX_UNDO) drop(undoStack.shift());
-  while (pinnedBytes > MAX_HISTORY_BYTES && undoStack.length > 1) drop(undoStack.shift());
+  let over = historyBytes() - MAX_HISTORY_BYTES;
+  while (over > 0 && undoStack.length > 1) {
+    drop(undoStack.shift());
+    sweepLogs(); compactLogs();
+    const now = historyBytes() - MAX_HISTORY_BYTES;
+    if (now >= over) break;                              // dropping freed nothing more
+    over = now;
+  }
+  compactLogs();
 }
 // Commit a snapshot that was taken *before* a change.
 function commitPre(pre) {
@@ -279,8 +382,10 @@ function commitPre(pre) {
   trimHistory();
   updateHistoryUI();
 }
-// Snapshot the current state now, for operations that mutate straight away.
-function pushUndo() { commitPre(snapshot()); }
+// Snapshot the current state now, for operations that mutate straight away. The trim
+// is deferred to the next render() because right now the pushed state still shares the
+// live surfaces; it only becomes extra once the operation has replaced them.
+function pushUndo() { commitPre(snapshot()); trimPending = true; }
 
 function beginGesture() {
   if (gestureSnap) drop(gestureSnap);    // a previous gesture that never committed
@@ -301,6 +406,9 @@ function restore(s) {
   selText = s.sel; selShape = s.selShape !== undefined ? s.selShape : null;
   selShapes = s.selShapes ? [...s.selShapes] : (selShape ? [selShape] : []);
   selLayer = s.selLayer; selLayers = s.selLayers ? [...s.selLayers] : [];
+  let moved = false;
+  if (s.applied) for (const [c, n] of s.applied) if (syncSurface(c, n)) moved = true;
+  if (moved) paintSeq++;                 // pixels changed in place; refresh the render cache
   resizeView(); render(); updateHistoryUI(); updateSelInfo(); updateLayerUI();
 }
 function undo() {
@@ -314,18 +422,13 @@ function redo() {
   if (!redoStack.length) return;
   const s = redoStack.pop();
   undoStack.push(snapshot());
-  trimHistory();
   restore(s); drop(s);
+  trimHistory();                         // after restoring, so s is still a reachable state above
 }
 function updateHistoryUI() {
   $('#undoBtn').disabled = !undoStack.length;
   $('#redoBtn').disabled = !redoStack.length;
 }
-
-// Copy-on-write: adopt a private canvas before editing one that history holds.
-function ownBase()    { if (frozen(base))    { base = clone(base);       bctx = base.getContext('2d'); } }
-function ownOverlay() { if (frozen(overlay)) { overlay = clone(overlay); octx = overlay.getContext('2d'); } }
-function ownLayer(l)  { if (frozen(l.c))     { l.c = clone(l.c); } }
 
 /* --------------------------------------------------------------- 6  model */
 function primaryLayer() { return layers.find(l => l.id === selLayer) || null; }
@@ -392,10 +495,11 @@ function setShapeSel(ids) {
   selShapes = seen;
   selShape = seen.length ? seen[seen.length - 1] : null;
   if (selShape) { selText = null; selLayers = []; selLayer = null; }
+  refreshShapeStyle();                                   // the Style rows follow the selection
   updateLayerUI(); updateSelBar();
 }
 function selectShape(s) { setShapeSel(s ? [s.id] : []); }
-function clearShapeSel() { selShape = null; selShapes = []; }
+function clearShapeSel() { selShape = null; selShapes = []; refreshShapeStyle(); }
 // Press-time selection for an annotation drag, mirroring selectForDrag for layers. Shift = range
 // from the primary; ctrl/meta = toggle. An additive press on something already selected is
 // deferred and toggled off on pointerup ONLY if the gesture never moved (so drag still drags).
@@ -404,15 +508,18 @@ function selectForShapeDrag(id, additive, shift) {
   if (shift && selShape) {
     const a = shapes.findIndex(z => z.id === selShape), b = shapes.findIndex(z => z.id === id);
     setShapeSel(shapes.slice(Math.min(a, b), Math.max(a, b) + 1).map(z => z.id));
+    revealShapeStyle();
     return null;
   }
   if (additive) {
     if (inSel) return id;
     setShapeSel([...selShapes, id]);
+    revealShapeStyle();
     return null;
   }
   if (!inSel) setShapeSel([id]);
   else if (selShape !== id) { selShape = id; updateLayerUI(); }
+  revealShapeStyle();
   return null;
 }
 function shapeHandlePoints(s) {
@@ -817,6 +924,7 @@ function drawSelectionOverlay(r) {
   cctx.restore();
 }
 function render() {
+  if (trimPending) { trimPending = false; trimHistory(); }   // a pushUndo() operation has landed
   if (!hasImage) { renderChrome(); return; }
   vctx.setTransform(1, 0, 0, 1, 0, 0);
   vctx.filter = 'none';
@@ -905,11 +1013,14 @@ const RAIL_ROWS = {
   move:      ['layerOrderRow', 'layerActRow'],
   marquee:   ['cloneBtn', 'selOpsRow', 'fxPixelRow', 'fxPixelBtn', 'fxBlurRow', 'fxBlurBtn', 'bgBtn'],
 };
+// A selected annotation reuses the drawing tools' Style rows (see refreshShapeStyle).
+const SHAPE_STYLE_ROWS = ['colorRow', 'widthRow', 'opacityRow', 'fillRow'];
 const railEl = IS_MOBILE ? $('#rail') : null;    // null on desktop: the sheet is the only home
 const railHome = new Map();                      // node -> where it lives when not on the rail
 function syncRail(id) {
   if (!railEl) return;
-  const wanted = RAIL_ROWS[id] || [];
+  // A selected annotation adds its Style rows to whatever the tool already shows.
+  const wanted = (selectedShape() ? SHAPE_STYLE_ROWS : []).concat(RAIL_ROWS[id] || []);
   for (const [node, home] of railHome)             // send anything not wanted back home
     if (!wanted.includes(node.id) && node.parentElement !== home) home.appendChild(node);
   for (const rid of wanted) {                      // then stack the wanted rows, in order
@@ -919,7 +1030,7 @@ function syncRail(id) {
   }
   // Sections whose rows now live in the rail would be bare headings in the sheet.
   // Text keeps its Font / size / background block; Select keeps its Adjust / Resize.
-  $('#styleSec').hidden = id !== 'text';
+  syncStyleSec();
   $('#fxSec').hidden = id === 'marquee';
 }
 
@@ -944,7 +1055,6 @@ function setTool(id) {
   applyCursor();
   // The Tool tab shows exactly one tool's options — pick the section that belongs to this tool.
   const opts = TOOL_OPTS[id] || null;
-  $('#styleSec').hidden = opts !== 'style';
   $('#wandSec').hidden  = opts !== 'wand';
   $('#blobSec').hidden  = opts !== 'blob';
   $('#cropSec').hidden  = !crop;
@@ -952,13 +1062,12 @@ function setTool(id) {
   const text = id === 'text';
   $('#fontRow').style.display = text ? '' : 'none';
   $('#widthRow').hidden = text; $('#opacityRow').hidden = text; $('#fillRow').hidden = text;
-  $('#toolHint').hidden = !!(opts || crop);
   if (TOOL_TAB[id]) setTab(TOOL_TAB[id]);           // Move -> Layers, Select -> Image
   else if (opts) setTab('tool');                    // drawing / wand / crop / blob -> its options
-  syncRail(id);                                     // phone: swap the rail to this tool's controls
   if (id === 'highlight' && $('#opacity').value === '1') setRange('opacity', 0.4);
   if (id !== 'move' && id !== 'text') { selText = null; clearShapeSel(); }
   else if (id === 'text') clearShapeSel();          // text tool: keep the text box, drop annotations
+  refreshShapeStyle();                              // Style block + rail: this tool, plus any selected annotation
   updateAnnUI(); updateSelBar();
   render();
 }
@@ -1619,22 +1728,33 @@ function doWand(p) {
     : null;
   const img = tctx.getImageData(0, 0, tgt.width, tgt.height);
   const fill = wand.transparent ? null : hexToRgb(wand.color);
-  const filled = floodFill(img, tgt.width, tgt.height, x, y, wand.tolerance, wand.global, b, fill);
-  if (!filled) { toast('Nothing matched — raise tolerance'); return; }
+  const hit = floodFill(img, tgt.width, tgt.height, x, y, wand.tolerance, wand.global, b, fill);
+  if (!hit.n) { toast('Nothing matched — raise tolerance'); return; }
   pushUndo();
-  // history may still own this canvas; take a private copy before writing pixels
-  if (l) { ownLayer(l); l.c.getContext('2d').putImageData(img, 0, 0); }
-  else   { ownBase();  bctx.putImageData(img, 0, 0); }
+  // Record only the rectangle the fill touched: `img` is the whole surface with the
+  // change applied, `before` is read back from the still-untouched canvas.
+  const r = hit.box;
+  const before = tctx.getImageData(r.x, r.y, r.w, r.h);
+  const ad = new Uint8ClampedArray(r.w * r.h * 4);
+  for (let yy = 0; yy < r.h; yy++) {
+    const s = ((r.y + yy) * tgt.width + r.x) * 4;
+    ad.set(img.data.subarray(s, s + r.w * 4), yy * r.w * 4);
+  }
+  const after = new ImageData(ad, r.w, r.h);
+  commitPatch(tgt, r.x, r.y, r.w, r.h, before, after);
+  tctx.putImageData(after, r.x, r.y);
   paintSeq++;
   render();
-  toast((wand.transparent ? 'Cleared ' : 'Filled ') + filled.toLocaleString() + ' px');
+  toast((wand.transparent ? 'Cleared ' : 'Filled ') + hit.n.toLocaleString() + ' px');
 }
 // `fill` is an [r,g,b] colour to paint the matched region, or null to clear it to transparent.
+// Returns { n, box } - the pixel count and the bounding rectangle actually changed, so the
+// caller can record a dirty-rect patch instead of copying the whole surface.
 function floodFill(img, w, h, sx, sy, tolerance, globalMode, b, fill) {
   const d = img.data;
   const x0 = b ? Math.max(0, b.x) : 0, y0 = b ? Math.max(0, b.y) : 0;
   const x1 = b ? Math.min(w, b.x + b.w) : w, y1 = b ? Math.min(h, b.y + b.h) : h;
-  if (sx < x0 || sx >= x1 || sy < y0 || sy >= y1) return 0;
+  if (sx < x0 || sx >= x1 || sy < y0 || sy >= y1) return { n: 0, box: null };
   const i0 = (sy * w + sx) * 4;
   const tr = d[i0], tg = d[i0 + 1], tb = d[i0 + 2], ta = d[i0 + 3];
   const max = (tolerance / 100) * 441.67;
@@ -1644,17 +1764,22 @@ function floodFill(img, w, h, sx, sy, tolerance, globalMode, b, fill) {
     const dr = d[i] - tr, dg = d[i + 1] - tg, db = d[i + 2] - tb;
     return dr * dr + dg * dg + db * db <= th2;
   };
-  const put = i => {
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  const put = (i, x, y) => {
     if (fill) { d[i] = fill[0]; d[i + 1] = fill[1]; d[i + 2] = fill[2]; d[i + 3] = 255; }
     else d[i + 3] = 0;
+    if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
+    if (y < by0) by0 = y; if (y > by1) by1 = y;
   };
+  // The bounding box of the changed pixels, or null when nothing changed.
+  const box = () => isFinite(bx0) ? { x: bx0, y: by0, w: bx1 - bx0 + 1, h: by1 - by0 + 1 } : null;
   if (globalMode) {
     let n = 0;
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
       const i = (y * w + x) * 4;
-      if (d[i + 3] !== 0 && eq(i)) { put(i); n++; }
+      if (d[i + 3] !== 0 && eq(i)) { put(i, x, y); n++; }
     }
-    return n;
+    return { n, box: box() };
   }
   const seen = new Uint8Array(w * h);
   const stack = [sx, sy];
@@ -1669,12 +1794,12 @@ function floodFill(img, w, h, sx, sy, tolerance, globalMode, b, fill) {
     xr--;
     for (let xi = xl; xi <= xr; xi++) {
       const k = y * w + xi;
-      seen[k] = 1; put(k * 4); n++;
+      seen[k] = 1; put(k * 4, xi, y); n++;
       if (y > y0 && !seen[k - w] && eq((k - w) * 4)) { stack.push(xi, y - 1); }
       if (y < y1 - 1 && !seen[k + w] && eq((k + w) * 4)) { stack.push(xi, y + 1); }
     }
   }
-  return n;
+  return { n, box: box() };
 }
 
 /* -------------------------------------------------------------- 11  layers */
@@ -1969,8 +2094,9 @@ function cancelCrop() { crop = null; cropDrag = null; $('#cropSec').hidden = tru
 /* ----------------------------------------------------------- 13  transform */
 function bakeTexts() {
   if (!texts.length) return;
-  ownOverlay();                    // history may still own this exact canvas
-  for (const t of texts) paintText(octx, t);
+  // Paint the text boxes into the overlay for real. The patch covers exactly the pixels
+  // the glyphs touched (found by diffing), so undo restores the overlay precisely.
+  withPatch(overlay, () => { for (const t of texts) paintText(octx, t); });
   texts = []; selText = null;
   paintSeq++;
 }
@@ -2255,6 +2381,7 @@ function resetStack(c) {
   adjust = { ...DEFAULT_FILTER }; syncAdjustUI();
   base = c; bctx = c.getContext('2d');
   overlay = canvas(c.width, c.height); octx = overlay.getContext('2d');
+  sweepLogs();                          // the previous document's surfaces are gone
   resizeView(); render();
   updateHistoryUI(); updateSelInfo(); updateLayerUI(); setTool('move');
 }
@@ -2322,6 +2449,7 @@ function clearEverything() {
   $('#hint').style.display = '';
   $('#dialog').hidden = true;
   zoom = fitZoom = 1; pan.x = pan.y = 0; atFit = true; if (zoomHud) zoomHud.hidden = true; cacheSigVal = null;
+  sweepLogs();                          // nothing is reachable any more
   updateHistoryUI(); updateSelInfo(); updateLayerUI(); syncAdjustUI();
   toast('Cleared');
 }
@@ -2371,8 +2499,42 @@ function liveStyleEdit(mutate) {
   styleBurst = setTimeout(() => { styleBurst = null; }, 600);
   mutate(); render();
 }
+// A selected annotation borrows the drawing tools' Style rows — Colour / Width / Opacity /
+// Fill — so it can be restyled after the fact. Selecting points those inputs at the shape's
+// current values (assigning .value fires no event, so it never logs a bogus undo step); the
+// existing handlers then write edits back through applyStyleToSelection, to every selected shape.
+function syncShapeStyleUI() {
+  const s = selectedShape();
+  if (!s) return;
+  style.color = s.color; style.width = s.width; style.opacity = s.opacity; style.filled = !!s.filled;
+  $('#color').value = s.color;
+  $('#width').value = String(clamp(Math.round(s.width), 1, 80));
+  $('#widthOut').textContent = Math.round(s.width);
+  $('#opacity').value = String(clamp(Math.round(s.opacity * 20) / 20, 0.05, 1));
+  $('#opacityOut').textContent = Math.round(s.opacity * 100) / 100;
+  $('#filled').checked = !!s.filled;
+  // Fill only changes a rectangle or an ellipse; the pen, line and arrow ignore it.
+  $('#fillRow').hidden = !selectedShapeSet().some(x => x.type === 'rect' || x.type === 'ellipse');
+}
+// Desktop keeps the whole Style block, shown for a drawing tool or a selected annotation. On a
+// phone its rows live on the rail, so the block itself survives only for text's font section.
+function syncStyleSec() {
+  const shape = !!selectedShape();
+  $('#styleSec').hidden = IS_MOBILE ? tool !== 'text' : !(TOOL_OPTS[tool] === 'style' || shape);
+  $('#toolHint').hidden = !!(TOOL_OPTS[tool] || crop || shape);
+}
+// Re-sync everything that depends on the tool or the shape selection: the inputs, the mobile
+// rail, and the Style block's visibility. Called whenever either one changes.
+function refreshShapeStyle() {
+  if (selectedShape()) syncShapeStyleUI();
+  syncRail(tool);
+  syncStyleSec();
+}
+// Picking an annotation on the canvas with a tool that has no style options of its own (Move)
+// reveals the Style block, the same place a drawing tool shows it.
+function revealShapeStyle() { if (selShape && TOOL_OPTS[tool] !== 'style') setTab('tool'); }
 function applyStyleToSelection(key, val) {
-  const targets = [texts.find(x => x.id === selText), selectedShape()].filter(o => o && key in o);
+  const targets = [texts.find(x => x.id === selText), ...selectedShapeSet()].filter(o => o && key in o);
   if (!targets.length) return;
   liveStyleEdit(() => { for (const o of targets) { o[key] = val; touchShape(o); } });
 }
