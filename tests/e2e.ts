@@ -611,6 +611,67 @@ async function main() {
     await new Promise(r=>setTimeout(r,900));})()`, true);
   check("working image restored after the layer tests", (await evaluate(`view.width`)) === 1600);
 
+  // ---- 1f. restyle an existing annotation from the Move tool ----
+  // Annotations keep their geometry; a selected one reuses the drawing tools' Style rows so
+  // its colour / width / opacity / fill can be changed after the fact.
+  await evaluate(`document.querySelector('[data-tool=rect]').click()`);
+  await evaluate(`(function(){const c=document.querySelector('#color');c.value='#112233';c.dispatchEvent(new Event('input'));
+    const w=document.querySelector('#width');w.value='10';w.dispatchEvent(new Event('input'));
+    const o=document.querySelector('#opacity');o.value='1';o.dispatchEvent(new Event('input'));
+    const f=document.querySelector('#filled');f.checked=false;f.dispatchEvent(new Event('change'));return 1;})()`);
+  const rAn = await rectOf();
+  await dragPx(rAn.left + rAn.width * 0.2, rAn.top + rAn.height * 0.2, rAn.left + rAn.width * 0.45, rAn.top + rAn.height * 0.45);
+  const drawn = await evaluate(`(function(){const s=shapes[shapes.length-1];
+     return {n:shapes.length, color:s.color, width:s.width};})()`);
+  check("annotation drawn with a known colour / width", drawn.n === 1 && drawn.color === '#112233' && drawn.width === 10, drawn);
+
+  await evaluate(`document.querySelector('[data-tool=move]').click()`);
+  const sCenter = await evaluate(`(function(){const s=shapes[0];const r=view.getBoundingClientRect();const sc=r.width/view.width;
+     return {x:r.left+((s.x1+s.x2)/2)*sc, y:r.top+((s.y1+s.y2)/2)*sc};})()`);
+  await mouse("mousePressed", sCenter.x, sCenter.y, 1); await mouse("mouseReleased", sCenter.x, sCenter.y, 1);
+  await sleep(150);
+  const styleUi = await evaluate(`({sel:selShape===shapes[0].id, tab:document.querySelector('#tabs .tab.on').dataset.tab,
+     style:getComputedStyle(document.querySelector('#styleSec')).display,
+     color:document.querySelector('#color').value, width:document.querySelector('#width').value,
+     fillHidden:document.querySelector('#fillRow').hidden})`);
+  check("Move + click selects the annotation and reveals its Style rows",
+    styleUi.sel && styleUi.tab === 'tool' && styleUi.style !== 'none' &&
+    styleUi.color === '#112233' && styleUi.width === '10' && styleUi.fillHidden === false, styleUi);
+
+  await evaluate(`(function(){const c=document.querySelector('#color');c.value='#00ff00';c.dispatchEvent(new Event('input'));
+    const f=document.querySelector('#filled');f.checked=true;f.dispatchEvent(new Event('change'));return 1;})()`);
+  const restyled = await evaluate(`(function(){const s=shapes[0];return {color:s.color,filled:s.filled};})()`);
+  const greenPx = await evaluate(`(function(){const s=shapes[0];const d=vctx.getImageData(Math.round((s.x1+s.x2)/2),Math.round((s.y1+s.y2)/2),1,1).data;return [...d];})()`);
+  check("colour + fill edits apply to the selected annotation", restyled.color === '#00ff00' && restyled.filled === true, restyled);
+  check("the restyled annotation repaints green", greenPx[0] < 40 && greenPx[1] > 220 && greenPx[2] < 40, greenPx);
+
+  // a multi-selection restyles together through the same controls
+  await evaluate(`document.querySelector('[data-tool=ellipse]').click()`);
+  const rEl = await rectOf();
+  await dragPx(rEl.left + rEl.width * 0.6, rEl.top + rEl.height * 0.2, rEl.left + rEl.width * 0.85, rEl.top + rEl.height * 0.45);
+  await evaluate(`document.querySelector('[data-tool=move]').click()`);
+  await evaluate(`selectForShapeDrag(shapes[1].id, false, false); selectForShapeDrag(shapes[0].id, true, false);`);
+  check("two annotations are multi-selected", (await evaluate(`selShapes.length`)) === 2);
+  await evaluate(`(function(){const c=document.querySelector('#color');c.value='#ff00ff';c.dispatchEvent(new Event('input'));return 1;})()`);
+  check("a colour edit reaches every selected annotation",
+    (await evaluate(`shapes.every(s=>s.color==='#ff00ff')`)) === true, await evaluate(`shapes.map(s=>s.color)`));
+
+  // Fill is only meaningful for a rectangle / ellipse
+  await evaluate(`document.querySelector('[data-tool=arrow]').click()`);
+  const rAr = await rectOf();
+  await dragPx(rAr.left + rAr.width * 0.2, rAr.top + rAr.height * 0.7, rAr.left + rAr.width * 0.4, rAr.top + rAr.height * 0.85);
+  check("Fill is hidden for an arrow", (await evaluate(`document.querySelector('#fillRow').hidden`)) === true);
+
+  // deselecting hides the Style block again, and a restyle is undoable
+  await evaluate(`document.querySelector('[data-tool=move]').click()`);
+  await evaluate(`selectShape(shapes.find(s=>s.type==='rect')); render();`);
+  await evaluate(`(function(){const c=document.querySelector('#color');c.value='#0000ff';c.dispatchEvent(new Event('input'));return 1;})()`);
+  await sleep(700);
+  await evaluate(`undo()`); await sleep(200);
+  check("a restyle is undoable in one step", (await evaluate(`shapes.find(s=>s.type==='rect').color`)) === '#ff00ff');
+  await evaluate(`clearShapeSel(); while(shapes.length) shapes.pop(); render();`);
+  check("deselecting hides the Style block", (await evaluate(`getComputedStyle(document.querySelector('#styleSec')).display`)) === 'none');
+
   // ---- 2. text boxes: create ----
   await evaluate(`document.querySelector('[data-tool=text]').click()`);
   const r1 = await rectOf();
