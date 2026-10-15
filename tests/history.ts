@@ -62,6 +62,11 @@ const PROBES = `
     let h = 2166136261; for (let i = 0; i < d.length; i++) { h ^= d[i]; h = Math.imul(h, 16777619); } return h >>> 0; };
   window.__px = (c,x,y) => [...c.getContext('2d').getImageData(x,y,1,1).data];
   window.__doc = () => { let s = window.__h(base)+'/'+window.__h(overlay); for (const l of layers) s += '/'+window.__h(l.c); return s; };
+  // Every recorded dirty rectangle, and the bytes they hold (before + after pixels).
+  window.__patchRects = () => [...logs.values()].flatMap(l => l.patches.map(p => ({ x:p.x, y:p.y, w:p.w, h:p.h })));
+  window.__patches = () => { let n = 0, bytes = 0, maxArea = 0, sumArea = 0;
+    for (const log of logs.values()) for (const p of log.patches) { const a = p.w * p.h; n++; bytes += a * 8; sumArea += a; if (a > maxArea) maxArea = a; }
+    return { n, bytes, maxArea, sumArea }; };
   true;`;
 const baseHash = () => evaluate(`window.__h(base)`);
 const docHash = () => evaluate(`window.__doc()`);
@@ -312,7 +317,90 @@ async function main() {
   check("history keeps the most recent entries (the newest is undoable)", (await evaluate(`(()=>{ undo(); return Math.round(layers[0].x); })()`)) === pushCount - 2,
     await evaluate(`Math.round(layers[0].x)`));
 
-  // ============ 9. no page errors ============
+  // ============ 9. dirty-rect patches ============
+  // The point of the rework: an in-place edit keeps the rectangle it changed rather
+  // than a whole-canvas clone, so depth is bounded by bytes, not a 12-step cap.
+  group("dirty-rect patches");
+  const CANVAS_BYTES = 1600 * 1200 * 4;                 // one full background clone (~7.3 MiB)
+  const SQUARE = 120;
+  // A flat field with up to 30 small, non-touching squares: a wand hit clears exactly one.
+  const loadSquares = async (n: number) => {
+    await evaluate(`(function(){ const c=canvas(1600,1200), x=c.getContext('2d');
+      x.fillStyle='#3366ff'; x.fillRect(0,0,1600,1200);
+      x.fillStyle='#ff0000'; window.__sq=[];
+      for (let r=0, k=0; r<5 && k<${n}; r++) for (let col=0; col<6 && k<${n}; col++, k++){ const sx=100+col*200, sy=100+r*200; x.fillRect(sx,sy,${SQUARE},${SQUARE}); window.__sq.push([sx,sy]); }
+      loadSource(c,1600,1200); return window.__sq.length; })()`);
+    await sleep(120);
+  };
+  const wandSquare = (i: number) =>
+    evaluate(`doWand({x:window.__sq[${i}][0]+${SQUARE / 2},y:window.__sq[${i}][1]+${SQUARE / 2}})`);
+
+  await loadSquares(1);
+  check("a fresh document starts with no patches", (await evaluate(`window.__patches()`)).n === 0);
+  const clean = await baseHash();
+  await wandSquare(0); await sleep(150);
+  const p1 = await evaluate(`window.__patches()`);
+  const pr1 = await evaluate(`window.__patchRects()[0]`);
+  check("a wand edit records exactly one patch", p1.n === 1, p1);
+  check("the patch is the changed rectangle, not the whole surface", p1.maxArea === SQUARE * SQUARE,
+    { area: p1.maxArea, expected: SQUARE * SQUARE, fullSurface: 1600 * 1200 });
+  check("the stored rect matches the square the fill touched",
+    pr1 && pr1.x === 100 && pr1.y === 100 && pr1.w === SQUARE && pr1.h === SQUARE, pr1);
+  check("a small edit costs a fraction of one canvas clone", p1.bytes < CANVAS_BYTES / 20,
+    { patchBytes: p1.bytes, canvasBytes: CANVAS_BYTES });
+  await evaluate(`undo()`); await sleep(150);
+  check("a patched edit still undoes pixel-exactly", (await baseHash()) === clean);
+  await evaluate(`redo()`); await sleep(150);
+  check("a patched edit still redoes pixel-exactly", (await baseHash()) !== clean);
+
+  // Depth well past the old 12-step cap, at a tiny memory cost.
+  await loadSquares(30);
+  const deep0 = await baseHash();
+  const states: number[] = [];
+  for (let i = 0; i < 30; i++) { await wandSquare(i); states.push(await baseHash()); }
+  const deepStack = await stack();
+  const deepMem = await evaluate(`historyBytes()`);
+  const deepPatches = await evaluate(`window.__patches()`);
+  check("more than the old 12 edits are all kept", deepStack.u === 30, deepStack);
+  check("30 dirty-rect edits hold less than a single full clone", deepMem < CANVAS_BYTES,
+    { historyBytes: deepMem, canvasBytes: CANVAS_BYTES });
+  check("the 30 edits are 30 small rectangles", deepPatches.n === 30 && deepPatches.maxArea === SQUARE * SQUARE, deepPatches);
+  for (let i = 0; i < 15; i++) await evaluate(`undo()`);
+  await sleep(150);
+  check("undoing 15 of 30 dirty-rect edits lands exactly on state 15", (await baseHash()) === states[14]);
+  for (let i = 0; i < 15; i++) await evaluate(`undo()`);
+  await sleep(150);
+  check("undoing all 30 reaches the pristine image exactly", (await baseHash()) === deep0);
+  for (let i = 0; i < 30; i++) await evaluate(`redo()`);
+  await sleep(250);
+  check("redoing all 30 replays every patch exactly", (await baseHash()) === states[29]);
+
+  // The byte budget, not a step cap, is what bounds deep structural history.
+  group("byte-budget trimming");
+  await loadFixture();
+  await evaluate(`(function(){ const l={id:uid(),c:canvas(1600,1200),x:0,y:0,w:1600,h:1200};
+    layers.push(l); checkedLayers.add(l.id); updateLayerUI(); render(); return 1; })()`);
+  await sleep(150);
+  const rotRounds = 30;
+  await evaluate(`(function(){ for (let i=0;i<${rotRounds};i++) rotate(90); return 1; })()`);
+  await sleep(400);
+  const trimStack = await stack();
+  const trimMem = await evaluate(`historyBytes()`);
+  const budget = await evaluate(`MAX_HISTORY_BYTES`);
+  check("deep structural history is trimmed below the number of edits", trimStack.u < rotRounds,
+    { depth: trimStack.u, edits: rotRounds });
+  check("retained history is held within the byte budget", trimMem <= budget, { historyBytes: trimMem, budget });
+  const trimHash = await docHash();
+  await evaluate(`undo(); redo();`); await sleep(300);
+  check("undo/redo still round-trips exactly after trimming", (await docHash()) === trimHash,
+    { before: trimHash, after: await docHash() });
+
+  // A draw that changes nothing records nothing.
+  await loadFixture();
+  const noop = await evaluate(`(()=>{ const before = window.__patches().n; withPatch(overlay, ()=>{}); return { before, after: window.__patches().n }; })()`);
+  check("a draw that changes nothing records no patch", noop.after === noop.before, noop);
+
+  // ============ 10. no page errors ============
   check("no uncaught page exceptions", exceptions.length === 0, exceptions.slice(0, 4));
   check("no console errors", consoleErrs.length === 0, consoleErrs.slice(0, 4));
 
