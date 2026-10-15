@@ -392,10 +392,11 @@ function setShapeSel(ids) {
   selShapes = seen;
   selShape = seen.length ? seen[seen.length - 1] : null;
   if (selShape) { selText = null; selLayers = []; selLayer = null; }
+  refreshShapeStyle();                                   // the Style rows follow the selection
   updateLayerUI(); updateSelBar();
 }
 function selectShape(s) { setShapeSel(s ? [s.id] : []); }
-function clearShapeSel() { selShape = null; selShapes = []; }
+function clearShapeSel() { selShape = null; selShapes = []; refreshShapeStyle(); }
 // Press-time selection for an annotation drag, mirroring selectForDrag for layers. Shift = range
 // from the primary; ctrl/meta = toggle. An additive press on something already selected is
 // deferred and toggled off on pointerup ONLY if the gesture never moved (so drag still drags).
@@ -404,15 +405,18 @@ function selectForShapeDrag(id, additive, shift) {
   if (shift && selShape) {
     const a = shapes.findIndex(z => z.id === selShape), b = shapes.findIndex(z => z.id === id);
     setShapeSel(shapes.slice(Math.min(a, b), Math.max(a, b) + 1).map(z => z.id));
+    revealShapeStyle();
     return null;
   }
   if (additive) {
     if (inSel) return id;
     setShapeSel([...selShapes, id]);
+    revealShapeStyle();
     return null;
   }
   if (!inSel) setShapeSel([id]);
   else if (selShape !== id) { selShape = id; updateLayerUI(); }
+  revealShapeStyle();
   return null;
 }
 function shapeHandlePoints(s) {
@@ -905,11 +909,14 @@ const RAIL_ROWS = {
   move:      ['layerOrderRow', 'layerActRow'],
   marquee:   ['cloneBtn', 'selOpsRow', 'fxPixelRow', 'fxPixelBtn', 'fxBlurRow', 'fxBlurBtn', 'bgBtn'],
 };
+// A selected annotation reuses the drawing tools' Style rows (see refreshShapeStyle).
+const SHAPE_STYLE_ROWS = ['colorRow', 'widthRow', 'opacityRow', 'fillRow'];
 const railEl = IS_MOBILE ? $('#rail') : null;    // null on desktop: the sheet is the only home
 const railHome = new Map();                      // node -> where it lives when not on the rail
 function syncRail(id) {
   if (!railEl) return;
-  const wanted = RAIL_ROWS[id] || [];
+  // A selected annotation adds its Style rows to whatever the tool already shows.
+  const wanted = (selectedShape() ? SHAPE_STYLE_ROWS : []).concat(RAIL_ROWS[id] || []);
   for (const [node, home] of railHome)             // send anything not wanted back home
     if (!wanted.includes(node.id) && node.parentElement !== home) home.appendChild(node);
   for (const rid of wanted) {                      // then stack the wanted rows, in order
@@ -919,7 +926,7 @@ function syncRail(id) {
   }
   // Sections whose rows now live in the rail would be bare headings in the sheet.
   // Text keeps its Font / size / background block; Select keeps its Adjust / Resize.
-  $('#styleSec').hidden = id !== 'text';
+  syncStyleSec();
   $('#fxSec').hidden = id === 'marquee';
 }
 
@@ -944,7 +951,6 @@ function setTool(id) {
   applyCursor();
   // The Tool tab shows exactly one tool's options — pick the section that belongs to this tool.
   const opts = TOOL_OPTS[id] || null;
-  $('#styleSec').hidden = opts !== 'style';
   $('#wandSec').hidden  = opts !== 'wand';
   $('#blobSec').hidden  = opts !== 'blob';
   $('#cropSec').hidden  = !crop;
@@ -952,13 +958,12 @@ function setTool(id) {
   const text = id === 'text';
   $('#fontRow').style.display = text ? '' : 'none';
   $('#widthRow').hidden = text; $('#opacityRow').hidden = text; $('#fillRow').hidden = text;
-  $('#toolHint').hidden = !!(opts || crop);
   if (TOOL_TAB[id]) setTab(TOOL_TAB[id]);           // Move -> Layers, Select -> Image
   else if (opts) setTab('tool');                    // drawing / wand / crop / blob -> its options
-  syncRail(id);                                     // phone: swap the rail to this tool's controls
   if (id === 'highlight' && $('#opacity').value === '1') setRange('opacity', 0.4);
   if (id !== 'move' && id !== 'text') { selText = null; clearShapeSel(); }
   else if (id === 'text') clearShapeSel();          // text tool: keep the text box, drop annotations
+  refreshShapeStyle();                              // Style block + rail: this tool, plus any selected annotation
   updateAnnUI(); updateSelBar();
   render();
 }
@@ -2371,8 +2376,42 @@ function liveStyleEdit(mutate) {
   styleBurst = setTimeout(() => { styleBurst = null; }, 600);
   mutate(); render();
 }
+// A selected annotation borrows the drawing tools' Style rows — Colour / Width / Opacity /
+// Fill — so it can be restyled after the fact. Selecting points those inputs at the shape's
+// current values (assigning .value fires no event, so it never logs a bogus undo step); the
+// existing handlers then write edits back through applyStyleToSelection, to every selected shape.
+function syncShapeStyleUI() {
+  const s = selectedShape();
+  if (!s) return;
+  style.color = s.color; style.width = s.width; style.opacity = s.opacity; style.filled = !!s.filled;
+  $('#color').value = s.color;
+  $('#width').value = String(clamp(Math.round(s.width), 1, 80));
+  $('#widthOut').textContent = Math.round(s.width);
+  $('#opacity').value = String(clamp(Math.round(s.opacity * 20) / 20, 0.05, 1));
+  $('#opacityOut').textContent = Math.round(s.opacity * 100) / 100;
+  $('#filled').checked = !!s.filled;
+  // Fill only changes a rectangle or an ellipse; the pen, line and arrow ignore it.
+  $('#fillRow').hidden = !selectedShapeSet().some(x => x.type === 'rect' || x.type === 'ellipse');
+}
+// Desktop keeps the whole Style block, shown for a drawing tool or a selected annotation. On a
+// phone its rows live on the rail, so the block itself survives only for text's font section.
+function syncStyleSec() {
+  const shape = !!selectedShape();
+  $('#styleSec').hidden = IS_MOBILE ? tool !== 'text' : !(TOOL_OPTS[tool] === 'style' || shape);
+  $('#toolHint').hidden = !!(TOOL_OPTS[tool] || crop || shape);
+}
+// Re-sync everything that depends on the tool or the shape selection: the inputs, the mobile
+// rail, and the Style block's visibility. Called whenever either one changes.
+function refreshShapeStyle() {
+  if (selectedShape()) syncShapeStyleUI();
+  syncRail(tool);
+  syncStyleSec();
+}
+// Picking an annotation on the canvas with a tool that has no style options of its own (Move)
+// reveals the Style block, the same place a drawing tool shows it.
+function revealShapeStyle() { if (selShape && TOOL_OPTS[tool] !== 'style') setTab('tool'); }
 function applyStyleToSelection(key, val) {
-  const targets = [texts.find(x => x.id === selText), selectedShape()].filter(o => o && key in o);
+  const targets = [texts.find(x => x.id === selText), ...selectedShapeSet()].filter(o => o && key in o);
   if (!targets.length) return;
   liveStyleEdit(() => { for (const o of targets) { o[key] = val; touchShape(o); } });
 }
