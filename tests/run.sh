@@ -65,6 +65,11 @@ else
   RC=$?
   if [ "$RC" -eq 0 ]; then
     echo
+    deno run -A "$HERE/history.ts"
+    RC=$?
+  fi
+  if [ "$RC" -eq 0 ]; then
+    echo
     deno run -A "$HERE/mobile.ts"
     RC=$?
   fi
