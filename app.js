@@ -130,6 +130,7 @@ let flattenAnnotations = false;
 
 let texts = [];                  // live, movable text boxes
 let selText = null;
+let editingTextId = null;        // text box whose inline editor is open (hidden from the canvas)
 let shapes = [];                 // live annotations: brush / highlight / line / arrow / rect / ellipse
 let selShape = null;             // primary (last-clicked) annotation id
 let selShapes = [];              // full annotation multi-selection
@@ -409,7 +410,7 @@ function restore(s) {
   let moved = false;
   if (s.applied) for (const [c, n] of s.applied) if (syncSurface(c, n)) moved = true;
   if (moved) paintSeq++;                 // pixels changed in place; refresh the render cache
-  resizeView(); render(); updateHistoryUI(); updateSelInfo(); updateLayerUI();
+  resizeView(); render(); updateHistoryUI(); updateSelInfo(); refreshShapeStyle(); updateLayerUI();
 }
 function undo() {
   if (!undoStack.length) return;
@@ -447,6 +448,7 @@ function setSelection(ids) {
   selLayers = seen;
   selLayer = seen.length ? seen[seen.length - 1] : null;
   if (selLayer) { selText = null; selShape = null; selShapes = []; }
+  refreshShapeStyle();                     // drop text/annotation style rows from the panel
   updateLayerUI();
 }
 // Press-time selection for a layer drag, shared by the layer body and the centre grab block.
@@ -485,6 +487,7 @@ function shapeBox(s) {
   return { x:Math.min(s.x1, s.x2), y:Math.min(s.y1, s.y2), w:Math.abs(s.x2 - s.x1), h:Math.abs(s.y2 - s.y1) };
 }
 function selectedShape() { return shapes.find(s => s.id === selShape) || null; }
+function selectedText() { return texts.find(t => t.id === selText) || null; }
 function selectedShapeSet() {
   const ids = selShapes.length ? selShapes : (selShape ? [selShape] : []);
   return ids.map(id => shapes.find(s => s.id === id)).filter(Boolean);
@@ -508,18 +511,18 @@ function selectForShapeDrag(id, additive, shift) {
   if (shift && selShape) {
     const a = shapes.findIndex(z => z.id === selShape), b = shapes.findIndex(z => z.id === id);
     setShapeSel(shapes.slice(Math.min(a, b), Math.max(a, b) + 1).map(z => z.id));
-    revealShapeStyle();
+    revealSelectedStyle();
     return null;
   }
   if (additive) {
     if (inSel) return id;
     setShapeSel([...selShapes, id]);
-    revealShapeStyle();
+    revealSelectedStyle();
     return null;
   }
   if (!inSel) setShapeSel([id]);
   else if (selShape !== id) { selShape = id; updateLayerUI(); }
-  revealShapeStyle();
+  revealSelectedStyle();
   return null;
 }
 function shapeHandlePoints(s) {
@@ -768,7 +771,7 @@ function drawStack(ctx) {
   for (const l of layers) ctx.drawImage(l.c, l.x, l.y, l.w, l.h);
   for (const s of shapes) paintShape(ctx, s);
   ctx.drawImage(overlay, 0, 0);
-  for (const t of texts) paintText(ctx, t);
+  for (const t of texts) if (t.id !== editingTextId) paintText(ctx, t);
 }
 // The stack changes far less often than the view is redrawn (a drag moves a preview, not the
 // stack), so composite it once into a reusable canvas, and only when its signature changes.
@@ -782,6 +785,7 @@ function sceneSig() {
   }
   s += '\u0005';
   for (const t of texts) s += '\u0002' + t.x.toFixed(1) + ',' + t.y.toFixed(1) + ',' + t.size + ',' + t.color + ',' + t.opacity + ',' + (t.bold ? 1 : 0) + (t.italic ? 1 : 0) + ',' + t.family + ',' + t.text + ',' + (t.bg || '-') + ',' + (t.bgOpacity ?? 1) + ',' + (t.pad || 0) + ',' + (t.radius || 0);
+  s += '\u0006' + (editingTextId || '');          // the box being edited is hidden from the canvas
   return s;
 }
 function stackCanvas() {
@@ -976,9 +980,10 @@ function renderChrome() {
   // Only the Move tool draws object chrome (outline + grips). A drawing tool never shows
   // handles for what you just drew — that would clutter the next stroke. Text keeps its box
   // while the Text tool is active, because that is how you see and drag the text you edit.
+  // The box being edited inline is skipped: the textarea is its preview (no doubled text).
   for (const l of layers) if (tool === 'move') drawLayerOutline(l, selL.has(l.id), !selL.has(l.id));
   for (const s of shapes) if (tool === 'move') drawShapeOutline(s, selS.has(s.id), !selS.has(s.id));
-  for (const t of texts) if (tool === 'move' || t.id === selText) drawSelection(t, !(t.id === selText));
+  for (const t of texts) if ((tool === 'move' || t.id === selText) && t.id !== editingTextId) drawSelection(t, !(t.id === selText));
   if (tool === 'move' && hoverId && !selL.has(hoverId)) {
     const hl = layers.find(l => l.id === hoverId);
     if (hl) drawHoverOutline(hl);
@@ -991,7 +996,7 @@ function renderChrome() {
   // Centre grips are drawn LAST and picked FIRST, so they always sit on/above every other handle.
   for (const l of layers) if (tool === 'move') drawLayerGrip(l, l.id === selLayer);
   for (const s of shapes) if (tool === 'move') { const c = shapeHandlePoints(s).c; drawCenterGrip(c[0], c[1], s.id === selShape); }
-  for (const t of texts) if (tool === 'move' || t.id === selText) { const b = textRect(t); drawCenterGrip(b.x + b.w / 2, b.y + b.h / 2, t.id === selText); }
+  for (const t of texts) if ((tool === 'move' || t.id === selText) && t.id !== editingTextId) { const b = textRect(t); drawCenterGrip(b.x + b.w / 2, b.y + b.h / 2, t.id === selText); }
 }
 
 /* ------------------------------------------------------- mobile options rail */
@@ -1019,8 +1024,11 @@ const railEl = IS_MOBILE ? $('#rail') : null;    // null on desktop: the sheet i
 const railHome = new Map();                      // node -> where it lives when not on the rail
 function syncRail(id) {
   if (!railEl) return;
-  // A selected annotation adds its Style rows to whatever the tool already shows.
-  const wanted = (selectedShape() ? SHAPE_STYLE_ROWS : []).concat(RAIL_ROWS[id] || []);
+  // A selected text box or annotation adds its style rows to whatever the tool already shows.
+  const wanted = [...new Set(
+    (selectedText() ? RAIL_ROWS.text : [])
+      .concat(selectedShape() ? SHAPE_STYLE_ROWS : [], RAIL_ROWS[id] || [])
+  )];
   for (const [node, home] of railHome)             // send anything not wanted back home
     if (!wanted.includes(node.id) && node.parentElement !== home) home.appendChild(node);
   for (const rid of wanted) {                      // then stack the wanted rows, in order
@@ -1058,16 +1066,12 @@ function setTool(id) {
   $('#wandSec').hidden  = opts !== 'wand';
   $('#blobSec').hidden  = opts !== 'blob';
   $('#cropSec').hidden  = !crop;
-  // Width / Opacity / Fill only affect drawn annotations — never text.
-  const text = id === 'text';
-  $('#fontRow').style.display = text ? '' : 'none';
-  $('#widthRow').hidden = text; $('#opacityRow').hidden = text; $('#fillRow').hidden = text;
   if (TOOL_TAB[id]) setTab(TOOL_TAB[id]);           // Move -> Layers, Select -> Image
   else if (opts) setTab('tool');                    // drawing / wand / crop / blob -> its options
   if (id === 'highlight' && $('#opacity').value === '1') setRange('opacity', 0.4);
   if (id !== 'move' && id !== 'text') { selText = null; clearShapeSel(); }
   else if (id === 'text') clearShapeSel();          // text tool: keep the text box, drop annotations
-  refreshShapeStyle();                              // Style block + rail: this tool, plus any selected annotation
+  refreshShapeStyle();                              // Style block + rail: this tool, plus any selection
   updateAnnUI(); updateSelBar();
   render();
 }
@@ -1224,7 +1228,7 @@ function onPointerDown(e) {
     if (hh) {
       if (hh.kind === 'textGrip') {
         const t = texts.find(x => x.id === hh.id);
-        if (t) { selectText(t); startTextDrag(t, p, e); return; }
+        if (t) { selectText(t); revealSelectedStyle(); startTextDrag(t, p, e); return; }
       } else if (hh.kind === 'shapeGrip') {
         const toggleId = selectForShapeDrag(hh.id, e.ctrlKey || e.metaKey, e.shiftKey);
         const orig = selectedShapeSet().map(t => ({ id:t.id, g: shapeOrig(t) }));
@@ -1256,7 +1260,7 @@ function onPointerDown(e) {
     }
     const hit = hitText(p);
     if (hit) {
-      selText = hit.id; clearShapeSel(); selLayers = []; selLayer = null; beginGesture();
+      selectText(hit); revealSelectedStyle(); beginGesture();
       drag = { kind:'text', id:hit.id, ox:p.x - hit.x, oy:p.y - hit.y, startX:p.x, startY:p.y, moved:false };
       capture(); updateLayerUI(); render(); return;
     }
@@ -1422,19 +1426,7 @@ function movePinch() {
 /* ------------------------------------------------------------ 9  text */
 function selectText(t) {
   selText = t.id; clearShapeSel(); selLayers = []; selLayer = null;
-  style.family = t.family; style.bold = t.bold; style.italic = t.italic;
-  style.bg = t.bg ?? null; style.bgOpacity = t.bgOpacity ?? 0.8;
-  style.pad = t.pad ?? 14; style.radius = t.radius ?? 10;
-  $('#fontFamily').value = t.family;
-  $('#fontSize').value = Math.min(t.size, 1200);
-  $('#fontSizeOut').textContent = Math.round(t.size);
-  $('#fontSizeNum').value = Math.round(t.size);
-  $('#textBgColor').value = style.bg || '#000000';
-  $('#textBgOpacity').value = style.bgOpacity; $('#textBgOpacityOut').textContent = style.bgOpacity;
-  $('#textPad').value = style.pad; $('#textPadOut').textContent = style.pad;
-  $('#textRadius').value = style.radius; $('#textRadiusOut').textContent = style.radius;
-  syncStyleButtons();
-  syncTextBgUI();
+  syncTextStyleUI();
   updateLayerUI();
   updateSelBar();
 }
@@ -1470,6 +1462,10 @@ function openTextEditor(t, pre, isNew) {
   }
   if (textPad(t)) ta.style.padding = (textPad(t) * scale) + 'px';
   stage.appendChild(ta);
+  // The textarea is the live preview while editing, so the canvas must stop painting this box:
+  // otherwise the same text shows twice, offset by the editor's padding.
+  editingTextId = t.id;
+  render();
   const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px';
                        ta.style.width = Math.max(60, ta.scrollWidth + 10) + 'px'; };
   ta.addEventListener('input', grow); grow();
@@ -1479,10 +1475,12 @@ function openTextEditor(t, pre, isNew) {
   const commit = () => {
     const v = ta.value;
     if (ta.parentNode) ta.remove();
+    if (editingTextId === t.id) editingTextId = null;
     t.text = v;
     const emptied = !v.trim();
     if (emptied) { texts = texts.filter(x => x !== t); if (selText === t.id) selText = null; }
     if (v !== before || emptied) commitPre(pre); else drop(pre);
+    refreshShapeStyle();
     render();
   };
   ta.addEventListener('blur', commit);
@@ -1500,6 +1498,7 @@ function deleteSelected() {
   if (t) { texts = texts.filter(x => x !== t); selText = null; }
   if (ss.length) { const ids = new Set(ss.map(s => s.id)); shapes = shapes.filter(s => !ids.has(s.id)); clearShapeSel(); }
   commitPre(pre);
+  refreshShapeStyle();
   render(); updateLayerUI();
 }
 // The Annotations section's Delete button deletes only annotations.
@@ -1521,6 +1520,7 @@ function duplicateSelected() {
   if (t) { const c = { ...t, id: uid(), x: t.x + t.size * 0.4, y: t.y + t.size * 0.4 }; texts.push(c); selText = c.id; }
   if (ss.length) { const copies = ss.map(dupShape); for (const c of copies) shapes.push(c); setShapeSel(copies.map(c => c.id)); }
   commitPre(pre);
+  refreshShapeStyle();
   render(); updateLayerUI(); updateSelBar();
 }
 function updateSelBar() {
@@ -2513,26 +2513,57 @@ function syncShapeStyleUI() {
   $('#opacity').value = String(clamp(Math.round(s.opacity * 20) / 20, 0.05, 1));
   $('#opacityOut').textContent = Math.round(s.opacity * 100) / 100;
   $('#filled').checked = !!s.filled;
-  // Fill only changes a rectangle or an ellipse; the pen, line and arrow ignore it.
-  $('#fillRow').hidden = !selectedShapeSet().some(x => x.type === 'rect' || x.type === 'ellipse');
 }
-// Desktop keeps the whole Style block, shown for a drawing tool or a selected annotation. On a
-// phone its rows live on the rail, so the block itself survives only for text's font section.
+// A selected text box points the same font controls at its own values, so Move -> click a
+// text box is an editing surface too (the Text tool did this already through selectText).
+function syncTextStyleUI() {
+  const t = selectedText();
+  if (!t) return;
+  style.color = t.color;
+  style.family = t.family; style.bold = t.bold; style.italic = t.italic;
+  style.bg = t.bg ?? null; style.bgOpacity = t.bgOpacity ?? 0.8;
+  style.pad = t.pad ?? 14; style.radius = t.radius ?? 10;
+  $('#color').value = t.color;
+  $('#fontFamily').value = t.family;
+  $('#fontSize').value = Math.min(t.size, 1200);
+  $('#fontSizeOut').textContent = Math.round(t.size);
+  $('#fontSizeNum').value = Math.round(t.size);
+  $('#textBgColor').value = style.bg || '#000000';
+  $('#textBgOpacity').value = style.bgOpacity; $('#textBgOpacityOut').textContent = style.bgOpacity;
+  $('#textPad').value = style.pad; $('#textPadOut').textContent = style.pad;
+  $('#textRadius').value = style.radius; $('#textRadiusOut').textContent = style.radius;
+  syncStyleButtons();
+  syncTextBgUI();
+}
+// Which Style rows make sense right now: Font for text, Width/Opacity/Fill for annotations.
+// Fill is only meaningful for a rectangle or an ellipse (the pen/line/arrow ignore it).
+function syncStyleRows() {
+  const text = tool === 'text' || !!selectedText();
+  const shapes = selectedShapeSet();
+  $('#fontRow').style.display = text ? '' : 'none';
+  $('#widthRow').hidden = text;
+  $('#opacityRow').hidden = text;
+  $('#fillRow').hidden = text || (shapes.length > 0 && !shapes.some(x => x.type === 'rect' || x.type === 'ellipse'));
+}
+// Desktop keeps the whole Style block, shown for a drawing tool or a selected text/annotation.
+// On a phone the rows live on the rail, but text keeps its font-family / background block here.
 function syncStyleSec() {
-  const shape = !!selectedShape();
-  $('#styleSec').hidden = IS_MOBILE ? tool !== 'text' : !(TOOL_OPTS[tool] === 'style' || shape);
-  $('#toolHint').hidden = !!(TOOL_OPTS[tool] || crop || shape);
+  const shape = !!selectedShape(), text = !!selectedText();
+  $('#styleSec').hidden = IS_MOBILE ? !(tool === 'text' || text) : !(TOOL_OPTS[tool] === 'style' || shape || text);
+  $('#toolHint').hidden = !!(TOOL_OPTS[tool] || crop || shape || text);
 }
-// Re-sync everything that depends on the tool or the shape selection: the inputs, the mobile
-// rail, and the Style block's visibility. Called whenever either one changes.
+// Re-sync everything that depends on the tool or the text/annotation selection: the inputs, the
+// mobile rail, and the Style block's visibility. Called whenever either one changes.
 function refreshShapeStyle() {
   if (selectedShape()) syncShapeStyleUI();
+  else if (selectedText()) syncTextStyleUI();
+  syncStyleRows();
   syncRail(tool);
   syncStyleSec();
 }
-// Picking an annotation on the canvas with a tool that has no style options of its own (Move)
-// reveals the Style block, the same place a drawing tool shows it.
-function revealShapeStyle() { if (selShape && TOOL_OPTS[tool] !== 'style') setTab('tool'); }
+// Picking a text box or annotation on the canvas with a tool that has no style options of its
+// own (Move) reveals the Style block, the same place a drawing tool shows it.
+function revealSelectedStyle() { if ((selShape || selectedText()) && TOOL_OPTS[tool] !== 'style') setTab('tool'); }
 function applyStyleToSelection(key, val) {
   const targets = [texts.find(x => x.id === selText), ...selectedShapeSet()].filter(o => o && key in o);
   if (!targets.length) return;

@@ -686,6 +686,20 @@ async function main() {
   check("text box created with content", t1.length === 1 && t1[0].text === "HELLO", t1);
   check("no stray editor left behind", (await evaluate(`!!document.querySelector('.textinput')`)) === false);
 
+  // Re-opening the editor must not show the canvas copy underneath the textarea (double text).
+  const rEdit = await rectOf();
+  const tEdit = await evaluate(`(()=>{const t=texts[0];const b=textBBox(t);const k=view.getBoundingClientRect().width/view.width;
+    return {x:t.x+b.w/2,y:t.y+b.h/2,k,id:t.id};})()`);
+  await mouse("mousePressed", rEdit.left + tEdit.x * tEdit.k, rEdit.top + tEdit.y * tEdit.k, 1);
+  await mouse("mouseReleased", rEdit.left + tEdit.x * tEdit.k, rEdit.top + tEdit.y * tEdit.k, 1);
+  await sleep(200);
+  const editing = await evaluate(`({ta:!!document.querySelector('.textinput'), editing:editingTextId, id:${JSON.stringify(tEdit.id)}})`);
+  check("clicking into a text box opens one editor and hides its canvas copy",
+    editing.ta === true && editing.editing === tEdit.id, editing);
+  await evaluate(`document.querySelector('.textinput').blur()`); await sleep(250);
+  check("closing the editor brings the canvas text back",
+    (await evaluate(`editingTextId`)) === null, await evaluate(`editingTextId`));
+
   // ---- 3. text boxes: move with Move tool ----
   await evaluate(`document.querySelector('[data-tool=move]').click()`);
   const tbox = await evaluate(`(()=>{const t=texts[0];const b=textBBox(t);return {x:t.x,y:t.y,w:b.w,h:b.h};})()`);
@@ -694,6 +708,14 @@ async function main() {
   await mouse("mousePressed", cx, cy, 1);
   check("clicking a text box selects it", (await evaluate(`selText`)) === t1[0].id);
   check("selection toolbar is visible (computed)", (await evaluate(`getComputedStyle(document.querySelector('#selbar')).display`)) !== "none");
+  const textStyleUi = await evaluate(`({tab:document.querySelector('#tabs .tab.on').dataset.tab,
+    style:getComputedStyle(document.querySelector('#styleSec')).display,
+    font:getComputedStyle(document.querySelector('#fontRow')).display,
+    width:document.querySelector('#widthRow').hidden, op:document.querySelector('#opacityRow').hidden,
+    fill:document.querySelector('#fillRow').hidden, family:document.querySelector('#fontFamily').value})`);
+  check("Move + click a text box reveals its Font / Size controls in the sidebar",
+    textStyleUi.tab === 'tool' && textStyleUi.style !== 'none' && textStyleUi.font !== 'none' &&
+    textStyleUi.width && textStyleUi.op && textStyleUi.fill && textStyleUi.family === 'Anton', textStyleUi);
   await mouse("mouseMoved", cx + 120, cy + 80, 1);
   await mouse("mouseReleased", cx + 120, cy + 80, 1);
   await sleep(250);
