@@ -176,9 +176,12 @@ async function main() {
 
   await evaluate(`document.querySelector('[data-tool=text]').click()`); await sleep(250);
   const railText = await evaluate(`({ids:[...document.querySelector('#rail').children].map(c=>c.id).join(),
-     styleHidden:document.querySelector('#styleSec').hidden, fontShown:document.querySelector('#fontRow').style.display!=='none'})`);
-  check("Text puts colour + size + bold/italic in the rail", railText.ids === "colorRow,fontSizeRow,boldItalicRow", railText);
-  check("Text keeps its font/background block in the sheet", railText.styleHidden === false && railText.fontShown === true, railText);
+     styleHidden:document.querySelector('#styleSec').hidden, fontInRail:!!document.querySelector('#rail #fontFamily'),
+     bgInSheet:document.querySelector('#fontRow').style.display!=='none'})`);
+  check("Text puts colour + font + size + bold/italic in the rail",
+    railText.ids === "colorRow,fontFamilyRow,fontSizeRow,boldItalicRow", railText);
+  check("the sheet keeps the text-background block while the rail holds the font",
+    railText.styleHidden === false && railText.fontInRail === true && railText.bgInSheet === true, railText);
 
   await evaluate(`document.querySelector('[data-tool=wand]').click()`); await sleep(250);
   const railWand = await evaluate(`[...document.querySelector('#rail').children].map(c=>c.id).join()`);
@@ -239,6 +242,24 @@ async function main() {
      if (ta) ta.blur();
      return ok;})()`);
   check("the text editor focuses synchronously (so iOS raises the keyboard)", syncFocus === true, syncFocus);
+
+  // The Size control: the track is logarithmic and deliberately bottom-heavy — 8..120 owns 75% of
+  // the travel, 120..1200 the remaining 25% — and it restyles the open editor at once. Before this
+  // the canvas skipped the edited box and the textarea kept its opening size, so dragging Size
+  // mid-edit changed nothing you could see.
+  const sizing = await evaluate(`(function(){ selectText(texts[0]); editSelected();
+     const ta=document.querySelector('textarea.textinput');
+     const at48=getComputedStyle(ta).fontSize;
+     setFontSize(200);
+     const at200=getComputedStyle(ta).fontSize;
+     const pos=document.querySelector('#fontSize').value;
+     setFontSize(48); ta.blur();
+     return {at48, at200, pos, low:posToSize(0), knee:posToSize(750), high:posToSize(1000), at48pos:sizeToPos(48)};})()`);
+  check("the Size track gives the low end most of the travel (8-120 = 75%)",
+    sizing.low === 8 && sizing.knee === 120 && sizing.high === 1200 &&
+    sizing.at48pos > 470 && sizing.at48pos < 520, sizing);
+  check("dragging Size while typing resizes the editor immediately",
+    parseFloat(sizing.at200) > parseFloat(sizing.at48), sizing);
 
   // Tapping existing text in Text mode re-opens the editor rather than dragging it (Move does that).
   await evaluate(`document.querySelector('[data-tool=text]').click()`); await sleep(150);
@@ -308,6 +329,14 @@ async function main() {
   await evaluate(`document.querySelector('[data-tool=move]').click(); selectText(texts[texts.length-1]); render();`);
   const txBar = await evaluate(`({hidden:document.querySelector('#selbar').hidden, edit:getComputedStyle(document.querySelector('#selEdit')).display})`);
   check("Move shows Edit on a selected text box", txBar.hidden === false && txBar.edit !== 'none', txBar);
+  const tcorner = await evaluate(`(function(){const t=texts[texts.length-1],b=textRect(t),s=stageSize();
+     pan.x=s.w/2-(b.x+b.w/2)*zoom; pan.y=s.h/2-(b.y+b.h/2)*zoom; clampPan(); applyView(); render();
+     const r=view.getBoundingClientRect(),k=r.width/view.width;
+     return {x:r.left+(b.x+b.w)*k, y:r.top+(b.y+b.h)*k, size:Math.round(t.size)};})()`);
+  await sleep(150);
+  await touchDrag(tcorner.x, tcorner.y, tcorner.x + 45, tcorner.y + 35);
+  const cornerScaled = await evaluate(`Math.round(texts[texts.length-1].size)`);
+  check("a corner grip scales the type on touch", cornerScaled > tcorner.size, { before: tcorner.size, after: cornerScaled });
 
   await shot("/tmp/mo-4-final.png");
   check("no uncaught page exceptions", exceptions.length === 0, exceptions.slice(0, 4));

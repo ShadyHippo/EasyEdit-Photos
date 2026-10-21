@@ -688,8 +688,8 @@ async function main() {
 
   // Re-opening the editor must not show the canvas copy underneath the textarea (double text).
   const rEdit = await rectOf();
-  const tEdit = await evaluate(`(()=>{const t=texts[0];const b=textBBox(t);const k=view.getBoundingClientRect().width/view.width;
-    return {x:t.x+b.w/2,y:t.y+b.h/2,k,id:t.id};})()`);
+  const tEdit = await evaluate(`(()=>{const t=texts[0];const b=textRect(t);const k=view.getBoundingClientRect().width/view.width;
+    return {x:b.x+b.w/2,y:b.y+b.h/2,k,id:t.id};})()`);
   await mouse("mousePressed", rEdit.left + tEdit.x * tEdit.k, rEdit.top + tEdit.y * tEdit.k, 1);
   await mouse("mouseReleased", rEdit.left + tEdit.x * tEdit.k, rEdit.top + tEdit.y * tEdit.k, 1);
   await sleep(200);
@@ -702,7 +702,7 @@ async function main() {
 
   // ---- 3. text boxes: move with Move tool ----
   await evaluate(`document.querySelector('[data-tool=move]').click()`);
-  const tbox = await evaluate(`(()=>{const t=texts[0];const b=textBBox(t);return {x:t.x,y:t.y,w:b.w,h:b.h};})()`);
+  const tbox = await evaluate(`(()=>{const t=texts[0];const b=textRect(t);return {x:b.x,y:b.y,w:b.w,h:b.h};})()`);
   const scale = r1.width / 1600;
   const cx = r1.left + (tbox.x + tbox.w / 2) * scale, cy = r1.top + (tbox.y + tbox.h / 2) * scale;
   await mouse("mousePressed", cx, cy, 1);
@@ -722,7 +722,48 @@ async function main() {
   const moved = await evaluate(`({x:Math.round(texts[0].x),y:Math.round(texts[0].y)})`);
   check("text box moves by drag", moved.x > t1[0].x + 50 && moved.y > t1[0].y + 30, { before: t1[0], after: moved });
 
-  // ---- 4. text: undo of move, duplicate, delete ----
+  // ---- 4. text: corner grips scale the type ----
+  await evaluate(`document.querySelector('[data-tool=move]').click(); selectText(texts[0]); render();`);
+  await sleep(150);
+  const beforeScale = await evaluate(`(()=>{const t=texts[0],b=textRect(t);return {size:t.size,x:b.x,y:b.y};})()`);
+  const seCorner = await evaluate(`(()=>{const t=texts[0],b=textRect(t),r=view.getBoundingClientRect();
+     const k=r.width/view.width; return {x:r.left+(b.x+b.w)*k, y:r.top+(b.y+b.h)*k};})()`);
+  await mouse("mousePressed", seCorner.x, seCorner.y, 1);
+  await mouse("mouseMoved", seCorner.x + 90, seCorner.y + 70, 1);
+  await mouse("mouseReleased", seCorner.x + 90, seCorner.y + 70, 1);
+  await sleep(250);
+  const scaled = await evaluate(`(()=>{const t=texts[0],b=textRect(t);return {size:t.size,x:b.x,y:b.y};})()`);
+  check("dragging a corner of a text box scales the type", scaled.size > beforeScale.size * 1.2, { beforeScale, scaled });
+  check("the opposite corner stays put while the type scales",
+    Math.abs(scaled.x - beforeScale.x) < 1.5 && Math.abs(scaled.y - beforeScale.y) < 1.5, { beforeScale, scaled });
+  await evaluate(`undo()`); await sleep(250);
+  check("undo restores the font size after a corner drag",
+    Math.round(await evaluate(`texts[0].size`)) === Math.round(beforeScale.size));
+
+  // ---- 4b. Text mode: the centre dot moves, the corners resize, the cursor says which ----
+  await evaluate(`document.querySelector('[data-tool=text]').click(); selectText(texts[0]); render();`);
+  await sleep(200);
+  const dot = await evaluate(`(()=>{const t=texts[0],b=textRect(t),r=view.getBoundingClientRect(),k=r.width/view.width;
+     return {x:r.left+(b.x+b.w/2)*k, y:r.top+(b.y+b.h/2)*k, tx:t.x, ty:t.y,
+             bx:r.left+b.x*k, by:r.top+b.y*k, sx:r.left+30, sy:r.top+30};})()`);
+  await mouse("mouseMoved", dot.x, dot.y, 1); await sleep(150);
+  check("the centre dot shows a move cursor in Text mode", (await evaluate(`stage.style.cursor`)) === 'move', await evaluate(`stage.style.cursor`));
+  await mouse("mousePressed", dot.x, dot.y, 1);
+  await mouse("mouseMoved", dot.x + 60, dot.y + 45, 1);
+  await mouse("mouseReleased", dot.x + 60, dot.y + 45, 1);
+  await sleep(250);
+  const dotMoved = await evaluate(`({x:Math.round(texts[0].x), y:Math.round(texts[0].y), editor:!!document.querySelector('.textinput')})`);
+  check("dragging the centre dot moves the text in Text mode",
+    dotMoved.x > Math.round(dot.tx) + 30 && dotMoved.editor === false, { dot, dotMoved });
+  await evaluate(`undo()`); await sleep(200);
+  const cornerHover = await evaluate(`(()=>{const t=texts[0],b=textRect(t),r=view.getBoundingClientRect(),k=r.width/view.width;
+     return {x:r.left+(b.x+b.w)*k, y:r.top+(b.y+b.h)*k, sx:r.left+30, sy:r.top+30};})()`);
+  await mouse("mouseMoved", cornerHover.x, cornerHover.y, 1); await sleep(150);
+  check("a corner grip shows a resize cursor", (await evaluate(`stage.style.cursor`)) === 'nwse-resize', await evaluate(`stage.style.cursor`));
+  await mouse("mouseMoved", cornerHover.sx, cornerHover.sy, 1); await sleep(150);
+  check("away from the handles the text cursor returns", (await evaluate(`stage.style.cursor`)) === 'text', await evaluate(`stage.style.cursor`));
+
+  // ---- 5. text: undo of move, duplicate, delete ----
   await evaluate(`undo()`); await sleep(250);
   const undone = await evaluate(`({x:Math.round(texts[0].x),y:Math.round(texts[0].y)})`);
   check("undo reverts text move", undone.x === t1[0].x && undone.y === t1[0].y, undone);
@@ -1300,8 +1341,8 @@ async function main() {
      const w=(ix,iy)=>{const X=Math.round((ix*z+pan.x)*d), Y=Math.round((iy*z+pan.y)*d);
        const img=cctx.getImageData(X-2,Y-2,5,5).data; let n=0;
        for(let i=0;i<img.length;i+=4) if(img[i]>235&&img[i+1]>235&&img[i+2]>235) n++; return n;};
-     const L=layers[0], S=shapes[0], T=texts[0], tb=textBBox(T);
-     return { layer:w(L.x+L.w/2,L.y+L.h/2), shape:w((S.x1+S.x2)/2,(S.y1+S.y2)/2), text:w(T.x+tb.w/2,T.y+tb.h/2) };})()`;
+     const L=layers[0], S=shapes[0], T=texts[0], tb=textRect(T);
+     return { layer:w(L.x+L.w/2,L.y+L.h/2), shape:w((S.x1+S.x2)/2,(S.y1+S.y2)/2), text:w(tb.x+tb.w/2,tb.y+tb.h/2) };})()`;
   const mvGrips = await evaluate(gripWhite);
   check("the Move tool shows a centre grip on every layer, annotation and text",
     mvGrips.layer > 0 && mvGrips.shape > 0 && mvGrips.text > 0, mvGrips);
@@ -1463,6 +1504,13 @@ async function main() {
   await evaluate(`(function(){const n=document.querySelector('#fontSizeNum'); n.value='900'; n.dispatchEvent(new Event('input')); return 1;})()`);
   check("font size reaches well past the old 220 cap", (await evaluate(`style.fontSize`)) === 900, await evaluate(`style.fontSize`));
   check("the size slider was raised too", Number(await evaluate(`document.querySelector('#fontSize').max`)) > 220);
+  // The phone's bottom-heavy log track is a phone shell feature; desktop keeps exact pixels.
+  const deskTrack = await evaluate(`(function(){ const before = style.fontSize; setFontSize(300);
+     const pos = Number(document.querySelector('#fontSize').value), back = posToSize(pos);
+     setFontSize(before);
+     return { pos, back, before, max: Number(document.querySelector('#fontSize').max) }; })()`);
+  check("desktop keeps the plain pixel track (no phone log curve)",
+    deskTrack.pos === 300 && deskTrack.back === 300 && deskTrack.max === 1200, deskTrack);
 
   const tp = await evaluate(`(function(){const r=view.getBoundingClientRect();return {x:r.left+150, y:r.top+120};})()`);
   await mouse("mousePressed", tp.x, tp.y, 1); await mouse("mouseReleased", tp.x, tp.y, 1);
@@ -1579,6 +1627,19 @@ async function main() {
      return { pad:at(r.x+4,r.y+4), rect:{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.w),h:Math.round(r.h)}, bw:Math.round(box.w), bh:Math.round(box.h) };})()`);
   check("a text background draws a plate around the padded box",
     plate.pad.join() === '255,0,0,255' && plate.rect.w === plate.bw + 60 && plate.rect.h === plate.bh + 60, plate);
+
+  // The box is the *ink* of the type (not the font's em box), so the padding is even on all sides.
+  const plateMargins = await evaluate(`(function(){
+     const t=texts[0], r=textRect(t), d=vctx.getImageData(0,0,view.width,view.height).data;
+     let x0=1e9,y0=1e9,x1=-1,y1=-1;
+     const X0=Math.max(0,Math.round(r.x)), Y0=Math.max(0,Math.round(r.y));
+     const X1=Math.min(view.width,Math.round(r.x+r.w)), Y1=Math.min(view.height,Math.round(r.y+r.h));
+     for(let y=Y0;y<Y1;y++)for(let x=X0;x<X1;x++){const i=(y*view.width+x)*4;
+       if(d[i]>240&&d[i+1]>240&&d[i+2]>240){x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);}}
+     return { left:x0-Math.round(r.x), right:Math.round(r.x+r.w)-x1,
+              top:y0-Math.round(r.y), bottom:Math.round(r.y+r.h)-y1 };})()`);
+  check("the type sits evenly inside its plate",
+    [plateMargins.left, plateMargins.right, plateMargins.top, plateMargins.bottom].every(m => Math.abs(m - 30) <= 2), plateMargins);
 
   const half = await evaluate(`(function(){texts[0].bgOpacity=0.5; render();
      const r=textRect(texts[0]); return [...vctx.getImageData(Math.round(r.x+4),Math.round(r.y+4),1,1).data];})()`);

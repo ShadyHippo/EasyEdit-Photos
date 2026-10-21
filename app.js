@@ -43,13 +43,15 @@ const PAN_MARGIN = 48;           // keep at least this much of the image on scre
 const DEFAULT_FILTER = { brightness:100, contrast:100, saturate:100, grayscale:0, sepia:0 };
 
 // Bundled faces only (see fonts/LICENSE.txt) — nothing relies on the host machine.
+// [value, desktop label, phone label]. The phone rail gives the picker ~120px, so it shows the
+// family name alone; the desktop sheet has room for the style hints.
 const FONT_CHOICES = [
-  ['Anton',            'Heavy (Anton)'],
-  ['Inter',            'Clean (Inter)'],
-  ['Roboto',           'Plain (Roboto)'],
-  ['Playfair Display', 'Serif (Playfair)'],
-  ['Comic Neue',       'Comic (Comic Neue)'],
-  ['Caveat',           'Handwritten (Caveat)'],
+  ['Anton',            'Heavy (Anton)',        'Anton'],
+  ['Inter',            'Clean (Inter)',        'Inter'],
+  ['Roboto',           'Plain (Roboto)',       'Roboto'],
+  ['Playfair Display', 'Serif (Playfair)',     'Playfair'],
+  ['Comic Neue',       'Comic (Comic Neue)',   'Comic Neue'],
+  ['Caveat',           'Handwritten (Caveat)', 'Caveat'],
 ];
 
 // [id, label, shortcut, row] — row 'top' is the global tool row, 'ann' the annotation row.
@@ -655,19 +657,33 @@ function filterCSS() {
 function fontCss(t, scale = 1) {
   return `${t.italic ? 'italic ' : ''}${t.bold ? 'bold ' : ''}${Math.round(t.size * scale)}px "${t.family}", sans-serif`;
 }
+// The box the text actually covers. Canvas measures the *em* box, but the glyphs sit inside it
+// with the font's leading and side bearings as dead space — which is why the plate and the
+// selection looked lopsided around the letters. Measure the ink (actualBoundingBox*) instead, so
+// the box hugs the type and its padding is even on all four sides. Offsets are from (t.x, t.y).
 function textBBox(t) {
-  vctx.save(); vctx.font = fontCss(t);
-  let w = 10;
-  for (const l of textLines(t)) w = Math.max(w, vctx.measureText(l).width);
+  const lines = textLines(t);
+  vctx.save(); vctx.font = fontCss(t); vctx.textBaseline = 'top';   // same baseline as paintText
+  let l = Infinity, r = -Infinity, top = Infinity, bot = -Infinity;
+  lines.forEach((s, i) => {
+    if (!s) return;
+    const m = vctx.measureText(s), y = i * t.size * 1.15;
+    l = Math.min(l, -m.actualBoundingBoxLeft);
+    r = Math.max(r, m.actualBoundingBoxRight);
+    top = Math.min(top, y - m.actualBoundingBoxAscent);
+    bot = Math.max(bot, y + m.actualBoundingBoxDescent);
+  });
   vctx.restore();
-  return { w, h: Math.max(1, textLines(t).length) * t.size * 1.15 };
+  // Nothing drawn yet (or only spaces): keep a caret-sized placeholder to select and type into.
+  if (!(r > l) || !(bot > top)) return { x: 0, y: 0, w: 10, h: Math.max(1, t.size * 1.15) };
+  return { x: l, y: top, w: r - l, h: bot - top };
 }
 // Text legibility plate: padding only counts while a background colour is set.
 function textPad(t) { return t.bg ? Math.max(0, t.pad || 0) : 0; }
-// The box you actually see: the text plus its background padding.
+// The box you actually see: the ink of the text plus its background padding.
 function textRect(t) {
   const b = textBBox(t), p = textPad(t);
-  return { x: t.x - p, y: t.y - p, w: b.w + p * 2, h: b.h + p * 2 };
+  return { x: t.x + b.x - p, y: t.y + b.y - p, w: b.w + p * 2, h: b.h + p * 2 };
 }
 function paintText(ctx, t) {
   ctx.save();
@@ -702,6 +718,14 @@ function drawSelection(t, faint = false) {
     const hs = (16 / s) * 0.6;
     cctx.fillStyle = 'rgba(255,255,255,.92)'; cctx.strokeStyle = 'rgba(34,197,94,.9)'; cctx.lineWidth = 1.5 / s;
     for (const [hx, hy] of [[x, y], [x + w, y], [x, y + h], [x + w, y + h]]) {
+      cctx.beginPath(); cctx.rect(hx - hs / 2, hy - hs / 2, hs, hs); cctx.fill(); cctx.stroke();
+    }
+  } else {
+    // Selected: the four corners are the resize grips. A text box has no width/height of its own,
+    // so they scale the type (see textCornerHit) — same gesture as resizing anything else.
+    const hs = (16 / s) * 1.2;
+    cctx.fillStyle = '#ffffff'; cctx.strokeStyle = '#22c55e'; cctx.lineWidth = 2 / s;
+    for (const [hx, hy] of Object.values(textHandlePoints(t))) {
       cctx.beginPath(); cctx.rect(hx - hs / 2, hy - hs / 2, hs, hs); cctx.fill(); cctx.stroke();
     }
   }
@@ -831,6 +855,7 @@ function applyView() {
   atFit = Math.abs(zoom - fitZoom) < 1e-9;
   if (zoomPct) zoomPct.textContent = Math.round(zoom * 100) + '%';   // no HUD on the phone
   renderChrome();
+  updateSelBar();                    // the floating bar is pinned to the box, so pan/zoom moves it too
 }
 function fitView(redraw = true) {
   fitZoom = fitScale(); zoom = fitZoom;
@@ -860,8 +885,8 @@ function drawLayerGrip(l, big = true) {
   cctx.strokeRect(cx - cs / 2, cy - cs / 2, cs, cs);
   cctx.restore();
 }
-function drawCenterGrip(cx, cy, big = true) {
-  const sc = viewScale(), r = (16 / sc) * (big ? 0.8 : 0.6);
+function drawCenterGrip(cx, cy, big = true, capPx = Infinity) {
+  const sc = viewScale(), r = Math.min((16 / sc) * (big ? 0.8 : 0.6), capPx / sc);
   cctx.save();
   cctx.beginPath(); cctx.arc(cx, cy, r, 0, Math.PI * 2);
   cctx.fillStyle = '#ffffff'; cctx.fill();
@@ -996,7 +1021,9 @@ function renderChrome() {
   // Centre grips are drawn LAST and picked FIRST, so they always sit on/above every other handle.
   for (const l of layers) if (tool === 'move') drawLayerGrip(l, l.id === selLayer);
   for (const s of shapes) if (tool === 'move') { const c = shapeHandlePoints(s).c; drawCenterGrip(c[0], c[1], s.id === selShape); }
-  for (const t of texts) if ((tool === 'move' || t.id === selText) && t.id !== editingTextId) { const b = textRect(t); drawCenterGrip(b.x + b.w / 2, b.y + b.h / 2, t.id === selText); }
+  for (const t of texts) if ((tool === 'move' || t.id === selText) && t.id !== editingTextId) {
+    const b = textRect(t); drawCenterGrip(b.x + b.w / 2, b.y + b.h / 2, t.id === selText, textGripCap(t));
+  }
 }
 
 /* ------------------------------------------------------- mobile options rail */
@@ -1005,7 +1032,7 @@ function renderChrome() {
 // you drag. The rows below are the *same* nodes the sheet uses, moved here by id —
 // one source of truth for every value, and nothing to keep in sync.
 const RAIL_ROWS = {
-  text:      ['colorRow', 'fontSizeRow', 'boldItalicRow'],
+  text:      ['colorRow', 'fontFamilyRow', 'fontSizeRow', 'boldItalicRow'],
   brush:     ['colorRow', 'widthRow', 'opacityRow', 'fillRow'],
   highlight: ['colorRow', 'widthRow', 'opacityRow', 'fillRow'],
   line:      ['colorRow', 'widthRow', 'opacityRow', 'fillRow'],
@@ -1037,7 +1064,7 @@ function syncRail(id) {
     railEl.appendChild(node);
   }
   // Sections whose rows now live in the rail would be bare headings in the sheet.
-  // Text keeps its Font / size / background block; Select keeps its Adjust / Resize.
+  // Text keeps its Exact size / background block; Select keeps its Adjust / Resize.
   syncStyleSec();
   $('#fxSec').hidden = id === 'marquee';
 }
@@ -1119,14 +1146,19 @@ function layerHandlePoints(l) {
 function topHandleHit(e) {
   const r = view.getBoundingClientRect(), sc = viewScale(), R = HANDLE_PX / 2;
   const near = pts => Math.abs(e.clientX - (r.left + pts[0] * sc)) <= R && Math.abs(e.clientY - (r.top + pts[1] * sc)) <= R;
-  // 1. centre grips (same z-order as content: texts over annotations over layers)
+  // 1. the selected text box's corner grips come first: they are the current selection's own
+  // handles, so neither another text's centre grip nor content underneath may steal the grab.
+  // (textCornerHit already yields to the selected box's centre, so moving still works.)
+  const tcorner = textCornerHit(e);
+  if (tcorner) return tcorner;
+  // 2. centre grips (same z-order as content: texts over annotations over layers)
   for (let i = texts.length - 1; i >= 0; i--) {
     const t = texts[i], b = textRect(t);
     if (near([b.x + b.w / 2, b.y + b.h / 2])) return { kind:'textGrip', id:t.id };
   }
   for (let i = shapes.length - 1; i >= 0; i--) if (near(shapeHandlePoints(shapes[i]).c)) return { kind:'shapeGrip', id:shapes[i].id };
   for (let i = layers.length - 1; i >= 0; i--) if (near(layerHandlePoints(layers[i]).c)) return { kind:'layerGrip', id:layers[i].id };
-  // 2. resize handles of the primary selection
+  // 3. resize handles of the primary selection
   const lprim = primaryLayer();
   if (lprim) {
     const pts = layerHandlePoints(lprim);
@@ -1169,6 +1201,58 @@ function layerResizeTo(l, d, p) {
   else                        { l.x = right - nw; l.y = d.oy; }
   l.w = nw; l.h = nh;
 }
+// A text box has no width/height of its own — its only resize axis is the font size. So its four
+// corners are resize grips: dragging one scales the type about the opposite corner, which makes a
+// text box behave like every other object in the editor. The Size slider stays for exact values.
+const TEXT_HANDLES = ['nw', 'ne', 'se', 'sw'];
+function textHandlePoints(t) {
+  const b = textRect(t);
+  return { nw:[b.x, b.y], ne:[b.x + b.w, b.y], se:[b.x + b.w, b.y + b.h], sw:[b.x, b.y + b.h] };
+}
+// Only the selected box shows grips, so an unselected text still just moves or opens its editor.
+// A corner only wins when the pointer is nearer to it than to the centre grip: on a box that is
+// only a few pixels wide on screen the two would otherwise overlap and moving would break.
+function textCornerHit(e) {
+  const t = selectedText();
+  if (!t) return null;
+  const r = view.getBoundingClientRect(), sc = viewScale();
+  const R = (IS_MOBILE ? 44 : HANDLE_PX) / 2;      // a fingertip needs a bigger target
+  const b = textRect(t);
+  const dist = (px, py) => Math.hypot(e.clientX - (r.left + px * sc), e.clientY - (r.top + py * sc));
+  const centre = dist(b.x + b.w / 2, b.y + b.h / 2);
+  const pts = textHandlePoints(t);
+  let best = null;
+  for (const k of TEXT_HANDLES) {
+    const [hx, hy] = pts[k], d = dist(hx, hy);
+    if (d <= R && d < centre && (!best || d < best.d)) best = { kind:'textResize', handle:k, id:t.id, d };
+  }
+  return best;
+}
+// The centre dot is the move handle, drawn for the selected box (in the text tool only that one).
+// Its grab radius is the drawn dot — capped by the box size, so a caption that is 20px wide on
+// screen still has room outside the dot to be tapped for typing.
+function textGripCap(t) {
+  const b = textRect(t), sc = viewScale();
+  return clamp(Math.min(b.w, b.h) * sc * 0.33, 5, IS_MOBILE ? 16 : 14);
+}
+function textGripHit(e) {
+  const t = selectedText();
+  if (!t) return null;
+  const r = view.getBoundingClientRect(), sc = viewScale();
+  const b = textRect(t);
+  const x = r.left + (b.x + b.w / 2) * sc, y = r.top + (b.y + b.h / 2) * sc;
+  return Math.hypot(e.clientX - x, e.clientY - y) <= textGripCap(t) ? { kind:'textGrip', id:t.id } : null;
+}
+function startTextScale(t, handle, e) {
+  const pts = textHandlePoints(t), anchor = { nw:'se', ne:'sw', se:'nw', sw:'ne' }[handle];
+  const a = pts[anchor], p = toCanvas(e);
+  beginGesture();
+  drag = { kind:'textScale', id:t.id, handle, anchor, ax:a[0], ay:a[1],
+           startSize:t.size, startDist:Math.max(1, Math.hypot(p.x - a[0], p.y - a[1])),
+           startX:p.x, startY:p.y, moved:false };
+  try { stage.setPointerCapture(e.pointerId); } catch {}
+  render();
+}
 function startTextDrag(t, p, e) {
   beginGesture();
   drag = { kind:'text', id:t.id, ox:p.x - t.x, oy:p.y - t.y, startX:p.x, startY:p.y, moved:false };
@@ -1196,6 +1280,18 @@ function onPointerDown(e) {
     capture(); render(); return;
   }
   if (tool === 'text') {
+    // A corner of the selected box scales the type; its centre dot moves the box; anywhere else
+    // on the text re-opens the editor.
+    const tc = textCornerHit(e);
+    if (tc) {
+      const t = texts.find(x => x.id === tc.id);
+      if (t) { selectText(t); startTextScale(t, tc.handle, e); return; }
+    }
+    const tg = textGripHit(e);
+    if (tg) {
+      const t = texts.find(x => x.id === tg.id);
+      if (t) { startTextDrag(t, p, e); return; }
+    }
     const hit = hitText(p);
     // Writing, not moving: tapping existing text re-opens the editor. Repositioning it is the
     // Move tool's job (which is also where the Duplicate/Delete bar appears).
@@ -1229,6 +1325,9 @@ function onPointerDown(e) {
       if (hh.kind === 'textGrip') {
         const t = texts.find(x => x.id === hh.id);
         if (t) { selectText(t); revealSelectedStyle(); startTextDrag(t, p, e); return; }
+      } else if (hh.kind === 'textResize') {
+        const t = texts.find(x => x.id === hh.id);
+        if (t) { selectText(t); startTextScale(t, hh.handle, e); return; }
       } else if (hh.kind === 'shapeGrip') {
         const toggleId = selectForShapeDrag(hh.id, e.ctrlKey || e.metaKey, e.shiftKey);
         const orig = selectedShapeSet().map(t => ({ id:t.id, g: shapeOrig(t) }));
@@ -1306,10 +1405,19 @@ function onPointerMove(e) {
     return;
   }
   const p = toCanvas(e);
-  if (tool === 'move' && !drag && !cropDrag) {
-    const stack = layersAt(p);
-    const top = stack.length ? stack[0].id : null;
-    if (top !== hoverId) { hoverId = top; scheduleRender(); }
+  if ((tool === 'move' || tool === 'text') && !drag && !cropDrag) {
+    // Hover feedback for the text handles works in both tools: a corner resizes the type, the
+    // centre dot moves the box, and everywhere else keeps the tool's own cursor.
+    const tc = textCornerHit(e), tg = textGripHit(e);
+    stage.style.cursor = tc
+      ? ((tc.handle === 'nw' || tc.handle === 'se') ? 'nwse-resize' : 'nesw-resize')
+      : tg ? 'move'
+      : tool === 'text' ? 'text' : 'default';
+    if (tool === 'move') {
+      const stack = layersAt(p);
+      const top = stack.length ? stack[0].id : null;
+      if (top !== hoverId) { hoverId = top; scheduleRender(); }
+    }
   }
   if (cropDrag) { applyCropDrag(p); scheduleRender(); return; }
   if (!drag) return;
@@ -1318,6 +1426,16 @@ function onPointerMove(e) {
   if (drag.kind === 'text') {
     const t = texts.find(x => x.id === drag.id); if (!t) return;
     t.x = clamp(p.x - drag.ox, -50, base.width); t.y = clamp(p.y - drag.oy, -50, base.height);
+  } else if (drag.kind === 'textScale') {
+    const t = texts.find(x => x.id === drag.id); if (!t) return;
+    const k = Math.hypot(p.x - drag.ax, p.y - drag.ay) / drag.startDist;
+    t.size = clamp(Math.round(drag.startSize * k), 1, 6000);
+    const b = textRect(t);                       // keep the opposite corner pinned
+    const ax = (drag.anchor === 'ne' || drag.anchor === 'se') ? b.x + b.w : b.x;
+    const ay = (drag.anchor === 'sw' || drag.anchor === 'se') ? b.y + b.h : b.y;
+    t.x += drag.ax - ax; t.y += drag.ay - ay;
+    style.fontSize = t.size;                     // the Size control follows the grip
+    syncSizeInputs(t.size);
   } else if (drag.kind === 'blob') {
     const b = blobs.find(z => z.id === drag.id); if (!b) return;
     b.x = p.x; b.y = p.y;
@@ -1360,9 +1478,19 @@ function onPointerUp(e) {
   if (d.kind === 'shapeEdit') {
     // additive click that never moved = toggle that annotation off the selection
     if (d.mode === 'move' && d.toggleId && !d.moved) setShapeSel(selShapes.filter(x => x !== d.toggleId));
-    commitGesture(!!d.moved); render(); return;
+    commitGesture(!!d.moved); updateSelBar(); render(); return;
   }
-  if (d.kind === 'text') { commitGesture(!!d.moved); render(); return; }
+  if (d.kind === 'text') {
+    // In Text mode a press on the centre dot is a move, but a *click* on it should still mean
+    // "type here" — otherwise the middle of the text would no longer open the editor.
+    if (tool === 'text' && !d.moved) {
+      const t = texts.find(x => x.id === d.id);
+      commitGesture(false);
+      if (t) { openTextEditor(t, snapshot(), false); return; }
+    }
+    commitGesture(!!d.moved); updateSelBar(); render(); return;
+  }
+  if (d.kind === 'textScale') { commitGesture(!!d.moved); updateSelBar(); render(); return; }
   if (d.kind === 'blob') { commitGesture(!!d.moved || !!d.created); render(); return; }
   if (d.kind === 'layer' || d.kind === 'layerResize') {
     // additive click that never moved = toggle the layer off the selection
@@ -1443,31 +1571,68 @@ function editSelected() {
   const t = texts.find(x => x.id === selText); if (!t) return;
   openTextEditor(t, snapshot(), false);
 }
-function openTextEditor(t, pre, isNew) {
+// The editor sits exactly where the text is drawn, so while it is open it *is* the preview.
+// Shared by openTextEditor and refreshTextEditor, which re-applies it when a style change
+// lands mid-edit (size slider, family, bold/italic, colour, plate).
+function placeTextEditor(ta, t) {
   const r = view.getBoundingClientRect(), sr = stage.getBoundingClientRect();
-  const scale = viewScale(), before = t.text;
+  const scale = viewScale(), box = textRect(t);
+  ta.style.left = ((r.left - sr.left) + box.x * scale) + 'px';
+  ta.style.top = ((r.top - sr.top) + box.y * scale) + 'px';
+  ta.style.color = t.color;
+  ta.style.font = fontCss(t, scale);
+  ta.style.lineHeight = '1.15';       // the font shorthand reset it to normal; canvas lines step by 1.15
+  // On a phone the fitted image can make the inline editor ~10px tall; keep it legible to type in.
+  if (IS_MOBILE) ta.style.fontSize = Math.max(16, Math.round(t.size * scale)) + 'px';
+  ta.style.background = t.bg ? hexToRgba(t.bg, clamp(t.bgOpacity ?? 1, 0, 1)) : '';
+  ta.style.borderRadius = t.bg ? (t.radius || 0) * scale + 'px' : '';
+  ta.style.padding = textPad(t) ? (textPad(t) * scale) + 'px' : '';
+}
+function growTextEditor(ta) {
+  ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px';
+  ta.style.width = Math.max(120, ta.scrollWidth + 10) + 'px';
+}
+// While the editor is open the canvas skips this box (the textarea is its preview), so a style
+// change has to be written into the editor as well — otherwise the control looks dead until you
+// finish typing, and the new size only appears on commit.
+function refreshTextEditor() {
+  if (!editingTextId) return;
+  const ta = stage.querySelector('textarea.textinput');
+  const t = texts.find(x => x.id === editingTextId);
+  if (!ta || !t) return;
+  placeTextEditor(ta, t);
+  growTextEditor(ta);
+}
+// A phone fits the whole photo, so a caption that is 48px in the image is a few pixels on screen.
+// The editor is kept typeable by a 16px floor, but a floor pins every size below it to the same
+// preview — which makes the Size slider look dead on a fitted photo. Zoom in on the box instead:
+// at that zoom the editor is legible at its true size, so the slider changes what you see.
+function zoomToEditText(t) {
+  if (!IS_MOBILE || !t.size) return;
+  if (t.size * viewScale() >= 16) return;                 // already readable where it sits
+  const target = clampZoom(Math.min(2, 16 / t.size));      // 2x is plenty even for 8px type
+  if (target <= zoom) return;
+  setZoom(target, pan.x + t.x * zoom, pan.y + t.y * zoom); // keep the box under the thumb
+  const { w, h } = stageSize();                            // and nudge it back if it left the screen
+  pan.x = clamp(pan.x, 24 - t.x * zoom, w - 24 - t.x * zoom);
+  pan.y = clamp(pan.y, 24 - t.y * zoom, h - 24 - t.y * zoom);
+  clampPan(); applyView();
+}
+function openTextEditor(t, pre, isNew) {
+  const before = t.text;
+  zoomToEditText(t);
   const ta = document.createElement('textarea');
   ta.className = 'textinput';
   ta.value = t.text;
   ta.rows = 1;
-  ta.style.left = ((r.left - sr.left) + (t.x - textPad(t)) * scale) + 'px';
-  ta.style.top = ((r.top - sr.top) + (t.y - textPad(t)) * scale) + 'px';
-  ta.style.color = t.color;
-  ta.style.font = fontCss(t, scale);
-  // On a phone the fitted image can make the inline editor ~10px tall; keep it legible to type in.
-  if (IS_MOBILE) ta.style.fontSize = Math.max(16, Math.round(t.size * scale)) + 'px';
-  if (t.bg) {                                    // preview the plate while typing
-    ta.style.background = hexToRgba(t.bg, clamp(t.bgOpacity ?? 1, 0, 1));
-    ta.style.borderRadius = (t.radius || 0) * scale + 'px';
-  }
-  if (textPad(t)) ta.style.padding = (textPad(t) * scale) + 'px';
+  ta.cols = 1;                    // else the intrinsic width is 20 columns of the current font size
+  placeTextEditor(ta, t);
   stage.appendChild(ta);
   // The textarea is the live preview while editing, so the canvas must stop painting this box:
   // otherwise the same text shows twice, offset by the editor's padding.
   editingTextId = t.id;
   render();
-  const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px';
-                       ta.style.width = Math.max(60, ta.scrollWidth + 10) + 'px'; };
+  const grow = () => growTextEditor(ta);
   ta.addEventListener('input', grow); grow();
   // Focus synchronously, inside the tap that opened the box: iOS (and Orion) only raise the
   // on-screen keyboard for a focus() in the same task as the user gesture — never from a timer.
@@ -1535,11 +1700,14 @@ function updateSelBar() {
   const scale = viewScale();
   const b = t ? textRect(t) : shapeBox(s);
   const left = (r.left - sr.left) + b.x * scale;
-  const top = (r.top - sr.top) + b.y * scale - 42;
   bar.hidden = false;
-  const bw = bar.offsetWidth || 190;
+  const bw = bar.offsetWidth || 190, bh = bar.offsetHeight || 54, gap = 8;
+  // Sit clear above the box: a fixed -42 offset left the bar 12px over the box's top edge, which
+  // put its top-corner grips out of reach. With no room above, go below the box instead.
+  let top = (r.top - sr.top) + b.y * scale - bh - gap;
+  if (top < 4) top = (r.top - sr.top) + (b.y + b.h) * scale + gap;
   bar.style.left = clamp(left, 4, Math.max(4, sr.width - bw - 4)) + 'px';
-  bar.style.top = clamp(top, 4, sr.height - 40) + 'px';
+  bar.style.top = clamp(top, 4, Math.max(4, sr.height - bh - 4)) + 'px';
 }
 
 /* ------------------------------------------------------- 10  selection/effects */
@@ -2489,6 +2657,7 @@ function applyToSelectedText(fn) {
   const t = texts.find(x => x.id === selText);
   if (!t) return;
   const pre = snapshot(); fn(t); render(); commitPre(pre);
+  refreshTextEditor();
 }
 // Live style edits (colour / width / opacity / fill) can target a text box or an annotation.
 // A burst of slider / colour-picker input collapses into a single undo entry.
@@ -2498,6 +2667,7 @@ function liveStyleEdit(mutate) {
   clearTimeout(styleBurst);
   styleBurst = setTimeout(() => { styleBurst = null; }, 600);
   mutate(); render();
+  refreshTextEditor();
 }
 // A selected annotation borrows the drawing tools' Style rows — Colour / Width / Opacity /
 // Fill — so it can be restyled after the fact. Selecting points those inputs at the shape's
@@ -2525,7 +2695,7 @@ function syncTextStyleUI() {
   style.pad = t.pad ?? 14; style.radius = t.radius ?? 10;
   $('#color').value = t.color;
   $('#fontFamily').value = t.family;
-  $('#fontSize').value = Math.min(t.size, 1200);
+  $('#fontSize').value = sizeToPos(t.size);
   $('#fontSizeOut').textContent = Math.round(t.size);
   $('#fontSizeNum').value = Math.round(t.size);
   $('#textBgColor').value = style.bg || '#000000';
@@ -2546,7 +2716,7 @@ function syncStyleRows() {
   $('#fillRow').hidden = text || (shapes.length > 0 && !shapes.some(x => x.type === 'rect' || x.type === 'ellipse'));
 }
 // Desktop keeps the whole Style block, shown for a drawing tool or a selected text/annotation.
-// On a phone the rows live on the rail, but text keeps its font-family / background block here.
+// On a phone the rows live on the rail, but text keeps its exact-size / background block here.
 function syncStyleSec() {
   const shape = !!selectedShape(), text = !!selectedText();
   $('#styleSec').hidden = IS_MOBILE ? !(tool === 'text' || text) : !(TOOL_OPTS[tool] === 'style' || shape || text);
@@ -2569,15 +2739,44 @@ function applyStyleToSelection(key, val) {
   if (!targets.length) return;
   liveStyleEdit(() => { for (const o of targets) { o[key] = val; touchShape(o); } });
 }
+// Size is set in image pixels and spans 8…1200. The two shells want different tracks for it.
+// Desktop has a wide panel, so it keeps the plain pixel track: position 48 is 48px, exact and
+// predictable. The phone rail is 92px wide, where a linear track moves ~13px of type per
+// thumb-pixel; there the track is positions 0…1000 and logarithmic, with 8…120 (where captions
+// live) owning the first 75% and 120…1200 the last 25%.
+const SIZE_MIN = 8, SIZE_MAX = 1200, SIZE_STEPS = 1000;
+const SIZE_KNEE = 120, SIZE_KNEE_POS = 0.75;
+function sizeToPos(v) {
+  v = clamp(v, SIZE_MIN, SIZE_MAX);
+  if (!IS_MOBILE) return Math.round(v);           // desktop: the track *is* image pixels
+  const f = v <= SIZE_KNEE
+    ? SIZE_KNEE_POS * Math.log(v / SIZE_MIN) / Math.log(SIZE_KNEE / SIZE_MIN)
+    : SIZE_KNEE_POS + (1 - SIZE_KNEE_POS) * Math.log(v / SIZE_KNEE) / Math.log(SIZE_MAX / SIZE_KNEE);
+  return Math.round(SIZE_STEPS * f);
+}
+function posToSize(p) {
+  if (!IS_MOBILE) return Math.round(clamp(p, SIZE_MIN, SIZE_MAX));   // desktop: pixels in, pixels out
+  const f = clamp(p, 0, SIZE_STEPS) / SIZE_STEPS;
+  const v = f <= SIZE_KNEE_POS
+    ? SIZE_MIN * Math.pow(SIZE_KNEE / SIZE_MIN, f / SIZE_KNEE_POS)
+    : SIZE_KNEE * Math.pow(SIZE_MAX / SIZE_KNEE, (f - SIZE_KNEE_POS) / (1 - SIZE_KNEE_POS));
+  return Math.round(v);
+}
 // One font size, two inputs (slider for feel, number for 4K-sized type).
+// The Size inputs (slider + readout + exact field) are driven from one value, so a corner grip
+// drag can move them without going through the slider's own mapping.
+function syncSizeInputs(v) {
+  $('#fontSize').value = sizeToPos(v);
+  $('#fontSizeOut').textContent = v;
+  $('#fontSizeNum').value = v;
+}
 function setFontSize(v) {
   v = clamp(Math.round(v) || 1, 1, 6000);
   style.fontSize = v;
-  $('#fontSize').value = Math.min(v, 1200);
-  $('#fontSizeOut').textContent = v;
-  $('#fontSizeNum').value = v;
+  syncSizeInputs(v);
   const t = texts.find(x => x.id === selText);
   if (t) { t.size = v; render(); }
+  refreshTextEditor();
 }
 function syncRatio(from) {
   if (!$('#lockRatio').checked) return;
@@ -2795,8 +2994,9 @@ function wire() {
     style.italic = !style.italic; syncStyleButtons();
     applyToSelectedText(t => { t.italic = style.italic; });
   };
-  $('#fontSize').addEventListener('input', e => setFontSize(+e.target.value));
+  $('#fontSize').addEventListener('input', e => setFontSize(posToSize(+e.target.value)));
   $('#fontSizeNum').addEventListener('input', e => setFontSize(+e.target.value));
+  $('#fontSize').value = sizeToPos(style.fontSize);
 
   // linked resize dimensions
   $('#rw').addEventListener('input', () => syncRatio('w'));
@@ -2879,9 +3079,9 @@ function buildToolButtons() {
   }
 }
 function buildFontOptions() {
-  for (const [value, label] of FONT_CHOICES) {
+  for (const [value, desktop, phone] of FONT_CHOICES) {
     const o = document.createElement('option');
-    o.value = value; o.textContent = label;
+    o.value = value; o.textContent = IS_MOBILE ? phone : desktop;
     fontSel.appendChild(o);
   }
   fontSel.value = style.family;

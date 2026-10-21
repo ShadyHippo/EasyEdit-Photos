@@ -62,14 +62,14 @@
 
       <section id="styleSec">
         <h3>Style</h3>
-        <label id="colorRow">Color <input type="color" id="color" value="#ff3b30"></label>
+        <label id="colorRow"><span class="lbl">Color</span> <input type="color" id="color" value="#ff3b30"></label>
         <label id="widthRow">Width <input type="range" id="width" min="1" max="80" value="6"><output id="widthOut">6</output></label>
         <label id="opacityRow">Opacity <input type="range" id="opacity" min="0.05" max="1" step="0.05" value="1"><output id="opacityOut">1</output></label>
         <label id="fillRow">Fill <input type="checkbox" id="filled"></label>
         <div id="fontRow">
-          <label>Font <select id="fontFamily"></select></label>
+          <label id="fontFamilyRow">Font <select id="fontFamily"></select></label>
           <label id="fontSizeRow">Size
-            <input type="range" id="fontSize" min="8" max="1200" value="48">
+            <input type="range" id="fontSize" min="0" max="1000" step="1" value="496">
             <output id="fontSizeOut">48</output>
           </label>
           <label>Exact <input type="number" id="fontSizeNum" min="1" max="6000" value="48"></label>
