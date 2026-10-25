@@ -8,6 +8,8 @@ compose*.yaml
 docker-compose*.yml
 .env
 rembg-models/
+# The sidecar's build context and Dockerfile are not part of the static site.
+rembg/
 Dockerfile
 .dockerignore
 *.md

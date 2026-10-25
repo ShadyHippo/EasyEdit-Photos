@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
-# Build the editor image and push it to GHCR — from this machine. No CI involved.
+# Build and push both EasyEdit images to GHCR.
 #
-#   scripts/publish.sh              build, tag :latest + :<short-sha>, push
+#   scripts/publish.sh              build both, tag :latest + :<short-sha>, push
 #   scripts/publish.sh v1.1.0       ... and also tag/push :v1.1.0
-#   scripts/publish.sh --no-push    build only (e.g. building on the server itself)
+#   scripts/publish.sh --no-push    build only (e.g. on the server itself)
 #
-# The image name is derived from the git remote, so a fork publishes to its own owner.
+# Two packages come from this one repo:
+#   ghcr.io/<owner>/<repo>          the static editor (nginx)
+#   ghcr.io/<owner>/<repo>-rembg    the patched rembg sidecar (rembg/Dockerfile)
 #
-# ONE-TIME AUTH. The token must have write:packages, which gh's default token does NOT:
+# They are deliberately separate packages: the 1.6 GB model server can be
+# rebuilt and republished without touching the editor image. GitHub Packages
+# allows any number of container packages per repository.
+#
+# ONE-TIME AUTH. The token must have write:packages, which gh's default token
+# does NOT:
 #   gh auth refresh -s write:packages
 #   gh auth token | docker login ghcr.io -u "$(gh api user -q .login)" --password-stdin
-# ...or export GHCR_TOKEN=<a PAT with write:packages> and this script logs in for you.
-# If that token belongs to a different account than the repo owner, also set GHCR_USER.
+# ...or export GHCR_TOKEN=<a PAT with write:packages> and this script logs in
+# for you. GH_TOKEN is used as a fallback when GHCR_TOKEN is unset, but it often
+# lacks write:packages. If the token belongs to a different account than the
+# repo owner, also set GHCR_USER.
 #
-# Afterwards `docker login` is remembered, so plain `scripts/publish.sh` is enough.
+# docker is used when present; otherwise buildah is used (no daemon needed).
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -36,54 +45,112 @@ esac
 owner=$(printf '%s' "$remote" | sed -E 's#^.*github\.com[:/]##; s#/.*$##')
 repo=$(printf '%s' "$remote" | sed -E 's#^.*github\.com[:/][^/]+/##; s#\.git$##; s#/$##')
 # GHCR requires a lowercase path, but the GitHub owner/repo may not be.
-image="ghcr.io/$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')/$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')"
+owner_lc=$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')
+repo_lc=$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')
+editor_image="ghcr.io/$owner_lc/$repo_lc"
+rembg_image="$editor_image-rembg"
 
 sha=$(git rev-parse --short HEAD)
-tags=("latest" "$sha")
-[ -n "$tag" ] && tags+=("$tag")
-
-# The build uses the working tree, but $sha names a commit. Say so if they differ, otherwise
-# a :<sha> tag can point at something that was never committed.
 if [ -n "$(git status --porcelain)" ]; then
   echo "note: uncommitted changes present — $sha names the commit, not exactly this build." >&2
 fi
 
-build_args=(); for t in "${tags[@]}"; do build_args+=(-t "$image:$t"); done
-
-echo "image  $image"
-echo "tags   ${tags[*]}"
-echo
-
-if [ -n "${GHCR_TOKEN:-}" ]; then
-  # The username must match the token's owner, which is normally the repo owner; GHCR_USER
-  # overrides it for the case where the token belongs to a different account.
-  login_user="${GHCR_USER:-$owner}"
-  printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$login_user" --password-stdin >/dev/null
-  echo "logged in as $login_user (GHCR_TOKEN)"
+editor_tags=("$editor_image:latest" "$editor_image:$sha")
+rembg_tags=("$rembg_image:latest" "$rembg_image:$sha")
+if [ -n "$tag" ]; then
+  editor_tags+=("$editor_image:$tag")
+  rembg_tags+=("$rembg_image:$tag")
 fi
 
-docker build "${build_args[@]}" .
+if command -v docker >/dev/null 2>&1; then
+  builder=docker
+elif command -v buildah >/dev/null 2>&1; then
+  builder=buildah
+else
+  echo "error: need docker or buildah on PATH" >&2
+  exit 1
+fi
 
-[ "$push" = 1 ] || { echo; echo "built only (--no-push)."; exit 0; }
+build_image() {
+  local context=$1; shift
+  local args=()
+  for t in "$@"; do args+=(-t "$t"); done
+  if [ "$builder" = docker ]; then
+    docker build "${args[@]}" "$context"
+  else
+    # docker format keeps HEALTHCHECK, which OCI output drops.
+    buildah bud --format docker "${args[@]}" "$context"
+  fi
+}
 
+push_image() {
+  local ref=$1
+  if [ "$builder" = docker ]; then
+    docker push "$ref"
+  else
+    local digest_file; digest_file=$(mktemp)
+    buildah push --digestfile "$digest_file" "$ref" "docker://$ref"
+    echo "digest $(cat "$digest_file")"
+    rm -f "$digest_file"
+  fi
+}
+
+echo "builder $builder"
+echo "editor  $editor_image"
+echo "rembg   $rembg_image"
+echo "tags    latest $sha${tag:+ $tag}"
 echo
-for t in "${tags[@]}"; do
-  if ! err=$(docker push "$image:$t" 2>&1); then
-    printf '%s\n' "$err" >&2
-    if printf '%s' "$err" | grep -qi "permission_denied\|does not match expected scopes"; then
-      cat >&2 <<'HINT'
+
+echo "==> editor"
+build_image . "${editor_tags[@]}"
+echo
+echo "==> rembg"
+build_image rembg "${rembg_tags[@]}"
+
+if [ "$push" = 0 ]; then
+  echo
+  echo "built only (--no-push)."
+  exit 0
+fi
+
+# Credentials. GHCR_TOKEN is the documented input; GH_TOKEN is a convenience
+# fallback for environments that already provide a packages-capable token.
+token="${GHCR_TOKEN:-${GH_TOKEN:-}}"
+login_user="${GHCR_USER:-$owner}"
+if [ -n "$token" ]; then
+  if [ "$builder" = docker ]; then
+    printf '%s' "$token" | docker login ghcr.io -u "$login_user" --password-stdin >/dev/null
+  else
+    printf '%s' "$token" | buildah login --username "$login_user" --password-stdin ghcr.io >/dev/null
+  fi
+  echo "logged in as $login_user"
+fi
+
+push_all() {
+  shift  # first argument is the image name; the tags are the rest
+  for t in "$@"; do
+    echo "==> push $t"
+    local out
+    if ! out=$(push_image "$t" 2>&1); then
+      printf '%s\n' "$out" >&2
+      if printf '%s' "$out" | grep -qi "permission_denied\|does not match expected scopes\|authentication required"; then
+        cat >&2 <<'HINT'
 
 The push was rejected: the credential lacks write:packages. Fix it once with:
   gh auth refresh -s write:packages
   gh auth token | docker login ghcr.io -u "$(gh api user -q .login)" --password-stdin
 ...or export GHCR_TOKEN=<a PAT with write:packages>.
 HINT
+      fi
+      exit 1
     fi
-    exit 1
-  fi
-  printf '%s\n' "$(printf '%s' "$err" | tail -1)"
-done
+    printf '%s\n' "$out" | tail -1
+  done
+}
+
+push_all "$editor_image" "${editor_tags[@]}"
+push_all "$rembg_image" "${rembg_tags[@]}"
 
 echo
-echo "pushed. digest:"
-docker inspect --format '{{index .RepoDigests 0}}' "$image:latest" 2>/dev/null || true
+echo "pushed:"
+for ref in "${editor_tags[@]}" "${rembg_tags[@]}"; do echo "  $ref"; done

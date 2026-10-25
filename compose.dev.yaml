@@ -11,3 +11,10 @@ services:
     volumes:
       - ./:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+  # Build the patched sidecar locally instead of pulling the GHCR package.
+  #   docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+  rembg:
+    image: easyedit-rembg:dev
+    build:
+      context: ./rembg

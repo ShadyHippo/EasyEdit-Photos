@@ -1,0 +1,3 @@
+# The build context is only this directory; nothing generated belongs here.
+*.log
+.DS_Store

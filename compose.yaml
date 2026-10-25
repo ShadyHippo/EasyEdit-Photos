@@ -25,7 +25,10 @@ services:
       - easyedit     # and it reaches rembg here as "rembg"
 
   rembg:
-    image: danielgatis/rembg:latest
+    # Built from rembg/Dockerfile: rembg 2.0.86 with gradio removed (which
+    # allows Pillow 13) and Brotli dropped. scripts/publish.sh publishes it as
+    # a second GHCR package, independent of the editor image.
+    image: ghcr.io/shadyhippo/easyedit-photos-rembg:latest
     container_name: easyedit-rembg
     restart: unless-stopped
     # image entrypoint is `rembg`, so this runs: rembg s --host 0.0.0.0 --port 7000 --log_level info
