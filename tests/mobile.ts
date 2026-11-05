@@ -338,6 +338,19 @@ async function main() {
   const cornerScaled = await evaluate(`Math.round(texts[texts.length-1].size)`);
   check("a corner grip scales the type on touch", cornerScaled > tcorner.size, { before: tcorner.size, after: cornerScaled });
 
+  // The corner squares are drawn on every box, so they have to be grips on every box: a touch
+  // that lands on one selects that text and scales it in a single gesture, with no tap to
+  // select first. (The faint box is what made the phone feel like it ignored the handle.)
+  const fcorner = await evaluate(`(function(){const t=texts[texts.length-1];
+     selText=null; selLayers=[]; selLayer=null; clearShapeSel(); render();
+     const b=textRect(t), r=view.getBoundingClientRect(), k=r.width/view.width;
+     return {x:r.left+(b.x+b.w)*k, y:r.top+(b.y+b.h)*k, size:Math.round(t.size), id:t.id};})()`);
+  await touchDrag(fcorner.x, fcorner.y, fcorner.x + 40, fcorner.y + 30);
+  const faintGrab = await evaluate(`(function(){const t=texts.find(x=>x.id==='${fcorner.id}');
+     return {size:Math.round(t.size), sel:selText===t.id};})()`);
+  check("an unselected text box's corner grip is grabbable on touch",
+    faintGrab.size > fcorner.size && faintGrab.sel === true, { before: fcorner.size, after: faintGrab });
+
   await shot("/tmp/mo-4-final.png");
   check("no uncaught page exceptions", exceptions.length === 0, exceptions.slice(0, 4));
   check("no console errors", consoleErrs.length === 0, consoleErrs.slice(0, 4));

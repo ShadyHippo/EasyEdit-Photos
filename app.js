@@ -1136,21 +1136,32 @@ function layerHandlePoints(l) {
     c:[l.x + l.w / 2, l.y + l.h / 2],
   };
 }
-// Resize handles live on the primary layer; the centre grab block is on every
-// selected layer, so any of them can be dragged to move the whole selection.
+// A fingertip needs a bigger target than a mouse, and every handle is picked with the same
+// radius so what looks the same behaves the same on both shells.
+function handleRadius() { return (IS_MOBILE ? 44 : HANDLE_PX) / 2; }
+// Resize handles live on the selected object; the centre grab block is on every object, so any
+// of them can be dragged to move the whole selection.
 // Handle picking is Z-ORDERED, matching what is drawn (grips are drawn last, so they are on top):
-//   1. every centre grip, front-to-back - a grip beats every other handle and every object body,
+//   1. text corners, front-to-back - the squares a text box shows are resize grips whether or
+//      not the box is selected, so pressing one selects the box and scales the type in one
+//      gesture (textCornerHit yields to the box's centre, so moving still works);
+//   2. every centre grip, front-to-back - a grip beats every other handle and every object body,
 //      so a buried layer's grip is clickable straight through the layers above it;
-//   2. the primary selection's own resize handles (beats all content);
-//   3. nothing - the caller then falls through to content, front-most first.
+//   3. the current selection's own resize handles, which may not be stolen by another object;
+//   4. every other handle that is drawn (annotations, layers), front-to-back - a handle you can
+//      see is a handle you can grab, so it selects its object and starts the resize at once;
+//   5. nothing - the caller then falls through to content, front-most first.
 function topHandleHit(e) {
-  const r = view.getBoundingClientRect(), sc = viewScale(), R = HANDLE_PX / 2;
+  const r = view.getBoundingClientRect(), sc = viewScale(), R = handleRadius();
   const near = pts => Math.abs(e.clientX - (r.left + pts[0] * sc)) <= R && Math.abs(e.clientY - (r.top + pts[1] * sc)) <= R;
-  // 1. the selected text box's corner grips come first: they are the current selection's own
-  // handles, so neither another text's centre grip nor content underneath may steal the grab.
-  // (textCornerHit already yields to the selected box's centre, so moving still works.)
-  const tcorner = textCornerHit(e);
-  if (tcorner) return tcorner;
+  // 1. text corners: the selected box first, then the rest front-to-back
+  const tsel = textCornerHit(e);
+  if (tsel) return tsel;
+  for (let i = texts.length - 1; i >= 0; i--) {
+    if (texts[i].id === selText) continue;
+    const h = textCornerHit(e, texts[i]);
+    if (h) return h;
+  }
   // 2. centre grips (same z-order as content: texts over annotations over layers)
   for (let i = texts.length - 1; i >= 0; i--) {
     const t = texts[i], b = textRect(t);
@@ -1158,16 +1169,27 @@ function topHandleHit(e) {
   }
   for (let i = shapes.length - 1; i >= 0; i--) if (near(shapeHandlePoints(shapes[i]).c)) return { kind:'shapeGrip', id:shapes[i].id };
   for (let i = layers.length - 1; i >= 0; i--) if (near(layerHandlePoints(layers[i]).c)) return { kind:'layerGrip', id:layers[i].id };
-  // 3. resize handles of the primary selection
+  // 3. the primary selection's resize handles
   const lprim = primaryLayer();
   if (lprim) {
     const pts = layerHandlePoints(lprim);
-    for (const k of ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se']) if (near(pts[k])) return { kind:'layerResize', handle:k };
+    for (const k of ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se']) if (near(pts[k])) return { kind:'layerResize', id:lprim.id, handle:k };
   }
   const sprim = selectedShape();
   if (sprim) {
     const pts = shapeHandlePoints(sprim);
-    for (const k in pts) if (k !== 'c' && near(pts[k])) return { kind:'shapeResize', handle:k };
+    for (const k in pts) if (k !== 'c' && near(pts[k])) return { kind:'shapeResize', id:sprim.id, handle:k };
+  }
+  // 4. everything else that is drawn, front-to-back
+  for (let i = shapes.length - 1; i >= 0; i--) {
+    if (shapes[i].id === selShape) continue;
+    const pts = shapeHandlePoints(shapes[i]);
+    for (const k in pts) if (k !== 'c' && near(pts[k])) return { kind:'shapeResize', id:shapes[i].id, handle:k };
+  }
+  for (let i = layers.length - 1; i >= 0; i--) {
+    if (layers[i].id === selLayer) continue;
+    const pts = layerHandlePoints(layers[i]);
+    for (const k of ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se']) if (near(pts[k])) return { kind:'layerResize', id:layers[i].id, handle:k };
   }
   return null;
 }
@@ -1209,14 +1231,15 @@ function textHandlePoints(t) {
   const b = textRect(t);
   return { nw:[b.x, b.y], ne:[b.x + b.w, b.y], se:[b.x + b.w, b.y + b.h], sw:[b.x, b.y + b.h] };
 }
-// Only the selected box shows grips, so an unselected text still just moves or opens its editor.
+// The corners are resize grips on EVERY text box, not just the selected one: the box is drawn
+// with its corner squares under the Move tool, and a touch that lands on one has to do what it
+// looks like it does (select the box and scale the type), never fall through to a drag.
 // A corner only wins when the pointer is nearer to it than to the centre grip: on a box that is
 // only a few pixels wide on screen the two would otherwise overlap and moving would break.
-function textCornerHit(e) {
-  const t = selectedText();
+function textCornerHit(e, t = selectedText()) {
   if (!t) return null;
   const r = view.getBoundingClientRect(), sc = viewScale();
-  const R = (IS_MOBILE ? 44 : HANDLE_PX) / 2;      // a fingertip needs a bigger target
+  const R = handleRadius();
   const b = textRect(t);
   const dist = (px, py) => Math.hypot(e.clientX - (r.left + px * sc), e.clientY - (r.top + py * sc));
   const centre = dist(b.x + b.w / 2, b.y + b.h / 2);
@@ -1342,12 +1365,17 @@ function onPointerDown(e) {
                  orig: movingIds().map(id => { const q = layers.find(z => z.id === id); return { id, x:q.x, y:q.y }; }) };
         capture(); render(); return;
       } else if (hh.kind === 'layerResize') {
-        const l = primaryLayer();
+        // A visible handle belongs to the layer it is drawn on: select that layer, then drag.
+        const l = layers.find(x => x.id === hh.id) || primaryLayer();
+        if (!l) return;
+        if (selLayer !== l.id) setSelection([l.id]);
         beginGesture();
         drag = { kind:'layerResize', id:l.id, handle:hh.handle, ox:l.x, oy:l.y, ow:l.w, oh:l.h, startX:p.x, startY:p.y, moved:false };
         capture(); render(); return;
       } else {
-        const cur = selectedShape();                     // shapeResize on the primary annotation
+        const cur = shapes.find(x => x.id === hh.id) || selectedShape();   // shapeResize
+        if (!cur) return;
+        if (selShape !== cur.id) setShapeSel([cur.id]);
         const b = shapeBox(cur);
         beginGesture();
         drag = { kind:'shapeEdit', mode:'resize', id:cur.id, handle:hh.handle,
@@ -1406,13 +1434,13 @@ function onPointerMove(e) {
   }
   const p = toCanvas(e);
   if ((tool === 'move' || tool === 'text') && !drag && !cropDrag) {
-    // Hover feedback for the text handles works in both tools: a corner resizes the type, the
-    // centre dot moves the box, and everywhere else keeps the tool's own cursor.
-    const tc = textCornerHit(e), tg = textGripHit(e);
-    stage.style.cursor = tc
-      ? ((tc.handle === 'nw' || tc.handle === 'se') ? 'nwse-resize' : 'nesw-resize')
-      : tg ? 'move'
-      : tool === 'text' ? 'text' : 'default';
+    // Hover feedback for every handle that can be grabbed: in Move that is any drawn handle
+    // (pressing it selects its object), in Text it is the selected box's corner and centre dot.
+    const hh = tool === 'move' ? topHandleHit(e) : (textCornerHit(e) || textGripHit(e));
+    stage.style.cursor = !hh
+      ? (tool === 'text' ? 'text' : 'default')
+      : (hh.kind === 'textResize' || hh.kind === 'shapeResize' || hh.kind === 'layerResize')
+        ? resizeCursor(hh.handle) : 'move';
     if (tool === 'move') {
       const stack = layersAt(p);
       const top = stack.length ? stack[0].id : null;
@@ -1518,6 +1546,15 @@ function onPointerCancel(e) {
 function onPointerLeave(e) {
   if (e && e.pointerType === 'touch') { pointers.delete(e.pointerId); if (pointers.size < 2) pinch = null; }
   if (hoverId) { hoverId = null; scheduleRender(); }
+}
+// The pointer shape for a resize handle: corners are diagonal, sides straight, line/arrow ends
+// are their own thing.
+function resizeCursor(handle) {
+  if (handle === 'nw' || handle === 'se') return 'nwse-resize';
+  if (handle === 'ne' || handle === 'sw') return 'nesw-resize';
+  if (handle === 'n' || handle === 's') return 'ns-resize';
+  if (handle === 'e' || handle === 'w') return 'ew-resize';
+  return 'crosshair';
 }
 function applyCursor() {
   if (panDrag || spaceDown) { stage.style.cursor = 'grab'; return; }

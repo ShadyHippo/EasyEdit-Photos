@@ -434,6 +434,17 @@ async function main() {
   after = await geom();
   check("south side handle stretches height only", after.h > before.h + 30 && after.w === before.w, { before, after });
 
+  // The handles are drawn on every layer, selected or not, so they have to work on every layer:
+  // one press selects that layer and starts the resize (no tap-then-grab two-step).
+  await evaluate(`layers[1].x=400; layers[1].y=200; layers[1].w=200; layers[1].h=150;
+    selLayer=null; selLayers=[]; updateLayerUI(); render();`);
+  hp = await layerPt(1, "se");
+  before = await geom();
+  await dragPx(hp.x, hp.y, hp.x + 70, hp.y + 50);
+  after = await geom();
+  check("an unselected layer's corner handle resizes it in one gesture",
+    after.w > before.w + 20 && (await evaluate(`selLayer === layers[1].id`)), { before, after });
+
   await evaluate(`layers[1].x=400; layers[1].y=200; layers[1].w=200; layers[1].h=150; render();`);
   hp = await layerPt(1, "c");
   before = await geom();
